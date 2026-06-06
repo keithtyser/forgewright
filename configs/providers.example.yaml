@@ -1,0 +1,40 @@
+# Forgewright config. Copy to $FORGEWRIGHT_HOME/providers.yaml
+# (default: ~/.forgewright/providers.yaml), or pass --config <path>.
+
+default_provider: local-vllm
+
+# Brains (model-agnostic via LiteLLM). kind ∈ vllm | openai | anthropic | openrouter | oauth-claude | oauth-codex
+providers:
+  local-vllm:
+    kind: vllm
+    model: qwen3.5-coder-30b          # served-model-name on your vLLM server
+    api_base: http://localhost:8000/v1
+  opus:
+    kind: anthropic
+    model: claude-opus-4-8
+    api_key_env: ANTHROPIC_API_KEY
+  gpt:
+    kind: openai
+    model: gpt-5.2
+    api_key_env: OPENAI_API_KEY
+  # openrouter / oauth-claude / oauth-codex follow the same shape.
+
+# Hardware targets: where jobs run. local = this machine; ssh = a GPU box.
+hardware:
+  local:
+    kind: local
+  spark:
+    kind: ssh
+    host: keith@dgx-spark
+    workdir: ~/forgewright-runs
+  pro6000:
+    kind: ssh
+    host: keith@workstation
+    workdir: ~/forgewright-runs
+
+# Hard caps enforced outside the training process (blast-radius limits).
+governor:
+  max_steps: 80
+  max_gpu_hours: 24
+  max_cost_usd: 50
+  max_wall_clock_hours: 48

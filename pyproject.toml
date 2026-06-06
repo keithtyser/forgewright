@@ -46,6 +46,10 @@ dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
 [project.scripts]
 forgewright = "forgewright.cli:app"
 
+[tool.hatch.metadata]
+# Required for the git direct reference to model-forge in the [local-train] extra.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["forgewright"]
 
