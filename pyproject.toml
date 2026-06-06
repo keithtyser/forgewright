@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forgewright"
+version = "0.0.1"
+description = "An agentic CLI harness for autonomous LLM post-training (fine-tune, abliterate, quantize, serving-opt) on local or SSH GPUs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Keith Tyser", email = "keithtyser@gmail.com" }]
+keywords = ["llm", "post-training", "fine-tuning", "abliteration", "quantization", "nvfp4", "agent", "harness"]
+
+# Light, cross-platform CONTROL PLANE: runs on the machine you type on (incl. Windows),
+# dispatches heavy work to GPU boxes over SSH/Docker. No torch here.
+dependencies = [
+  "litellm>=1.55",          # model-agnostic brain (local vLLM / API / OAuth tap)
+  "typer>=0.15",            # CLI
+  "rich>=13.9",             # terminal UX
+  "pydantic>=2.9",
+  "pydantic-settings>=2.6",
+  "paramiko>=3.5",          # SSH execution on remote GPU boxes
+  "duckdb>=1.1",            # recipe-memory / ledger index
+  "huggingface-hub>=0.27",  # model/dataset metadata (light)
+  "pyyaml>=6.0",
+  "httpx>=0.28",            # rollout-as-a-service HTTP + API calls
+]
+
+[project.optional-dependencies]
+# Install ON the GPU box (Linux) to run training/quant locally instead of over SSH.
+local-train = [
+  "torch>=2.5",
+  "transformers>=4.46",
+  "datasets>=3.0",
+  "peft>=0.13",
+  "trl>=0.12",
+  "accelerate>=1.1",
+  "bitsandbytes>=0.44",
+  # unsloth is platform/CUDA-specific — install separately per README (Blackwell wheels).
+  "model-forge[finetuning,abliteration,external] @ git+https://github.com/keithtyser/model-forge.git@main",
+]
+mcp = ["mcp>=1.1"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
+
+[project.scripts]
+forgewright = "forgewright.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["forgewright"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
