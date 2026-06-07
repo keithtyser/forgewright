@@ -214,7 +214,7 @@ def build_grpo_train_command(
     run_dir = f"runs/rl/{name}"
     return (
         f"mkdir -p {hf_home} && docker run --rm --gpus {gpus} "
-        f'--user "$(id -u):$(id -g)" --shm-size=16g '
+        f'--user "$(id -u):$(id -g)" -e HOME="$HOME" --shm-size=16g '
         f"-e HF_HOME={hf_home} -e HF_DATASETS_CACHE={hf_home}/datasets -e HF_HUB_DISABLE_XET=1 "
         f"-v {repo}:{repo} -v {models_dir}:{models_dir} -v {hf_home}:{hf_home} -w {repo} "
         f"--entrypoint python3 {image} {run_dir}/train_grpo.py --plan {run_dir}/plan.json"
