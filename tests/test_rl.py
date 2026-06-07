@@ -57,6 +57,16 @@ def test_build_grpo_plan_applies_defaults_and_overrides():
     assert plan["data"]["path"] == "datasets/rl/math.jsonl"
 
 
+def test_grpo_vllm_rollout_opt_in():
+    d = grpo_scar_defaults()
+    assert d["use_vllm"] is False and d["vllm_mode"] == "colocate"   # safe default: HF generate
+    plan = build_grpo_plan("q08_grpo", source="Qwen/Qwen3.5-0.8B",
+                           data_path="d.jsonl", use_vllm=True)
+    assert plan["grpo"]["use_vllm"] is True                          # opt-in flows through
+    src = render_grpo_trainer()
+    assert "use_vllm=h.get(" in src and "vllm_mode=h.get(" in src    # wired into GRPOConfig
+
+
 def test_render_trainer_is_self_contained():
     src = render_grpo_trainer()
     # reward helpers injected verbatim (no forgewright import needed in the container)

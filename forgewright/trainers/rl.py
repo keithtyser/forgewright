@@ -82,6 +82,11 @@ def grpo_scar_defaults() -> dict:
         "top_p": 1.0,
         "learning_rate": 1e-5,            # below SFT (8e-5) but high enough for LoRA to actually move
         "max_completion_length": 256,
+        # vLLM rollout: OFF by default (HF generate is the safe path). Set use_vllm=True for
+        # fast colocate rollouts (shares the GPU); leaves headroom for the policy/training.
+        "use_vllm": False,
+        "vllm_mode": "colocate",
+        "vllm_gpu_memory_utilization": 0.3,
     }
 
 
@@ -135,7 +140,9 @@ args = GRPOConfig(
     num_generations=h["num_generations"], num_iterations=h["num_iterations"],
     temperature=h["temperature"], top_p=h["top_p"],
     learning_rate=h["learning_rate"], max_completion_length=h["max_completion_length"],
-    use_vllm=False,
+    use_vllm=h.get("use_vllm", False),
+    vllm_mode=h.get("vllm_mode", "colocate"),
+    vllm_gpu_memory_utilization=h.get("vllm_gpu_memory_utilization", 0.3),
 )
 peft = LoraConfig(r=plan["lora"]["r"], lora_alpha=plan["lora"]["alpha"], lora_dropout=0.0,
                   target_modules=plan["lora"]["target_modules"], task_type="CAUSAL_LM")
