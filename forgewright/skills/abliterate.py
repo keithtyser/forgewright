@@ -24,9 +24,11 @@ from typing import Any, Optional
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
 
-# model-forge ships reusable contrastive prompt sets; default to them.
-DEFAULT_HARMFUL = "datasets/abliteration/harmful_refusal.yaml"
-DEFAULT_BENIGN = "datasets/abliteration/benign_control.yaml"
+# model-forge ships reusable contrastive prompt sets. Data paths in the config are
+# resolved relative to the config file (configs/abliteration/), so reach the repo root
+# with ../../ (matches model-forge's own abliteration configs).
+DEFAULT_HARMFUL = "../../datasets/abliteration/harmful_refusal.yaml"
+DEFAULT_BENIGN = "../../datasets/abliteration/benign_control.yaml"
 
 # Scar defaults: project only mid/late layers, leave embeddings/lm_head/MoE experts
 # untouched, norm-preserve, conservative strength — over-abliteration nukes benign

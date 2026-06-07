@@ -47,7 +47,7 @@ def test_scaffold_bakes_capability_preserving_defaults():
     assert "leave_lm_head_untouched: true" in cfg
     assert "leave_moe_experts_untouched: true" in cfg
     assert "norm_preserve: true" in cfg
-    assert "harmful_prompts: datasets/abliteration/harmful_refusal.yaml" in cfg
+    assert "harmful_prompts: ../../datasets/abliteration/harmful_refusal.yaml" in cfg
     assert "require_execute_flag: true" in cfg
 
 
