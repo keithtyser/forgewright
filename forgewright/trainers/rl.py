@@ -88,8 +88,9 @@ def grpo_scar_defaults() -> dict:
 
 _GRPO_TRAINER_TEMPLATE = '''\
 """Forgewright GRPO/RLVR trainer (generated; runs inside model-forge-posttrain-tf5)."""
-import json, sys
+import json, os, re, sys
 from pathlib import Path
+from typing import Optional
 
 import torch
 from datasets import load_dataset
@@ -98,6 +99,7 @@ from transformers import AutoTokenizer
 from trl import GRPOConfig, GRPOTrainer
 
 plan = json.loads(Path(sys.argv[sys.argv.index("--plan") + 1]).read_text())
+out_dir = os.path.expanduser(plan["model"]["output_dir"])  # ~ is not expanded by TRL
 
 {reward_source}
 
@@ -120,7 +122,7 @@ def reward_format(completions, **kwargs):
 
 h = plan["grpo"]
 args = GRPOConfig(
-    output_dir=plan["model"]["output_dir"],
+    output_dir=out_dir,
     per_device_train_batch_size=h["num_generations"],
     gradient_accumulation_steps=1,
     max_steps=h["max_steps"],
@@ -139,8 +141,8 @@ peft = LoraConfig(r=plan["lora"]["r"], lora_alpha=plan["lora"]["alpha"], lora_dr
 trainer = GRPOTrainer(model=plan["model"]["source"], reward_funcs=[reward_correct, reward_format],
                       args=args, train_dataset=ds, peft_config=peft)
 trainer.train()
-trainer.save_model(plan["model"]["output_dir"])
-print("GRPO DONE ->", plan["model"]["output_dir"])
+trainer.save_model(out_dir)
+print("GRPO DONE ->", out_dir)
 '''
 
 
