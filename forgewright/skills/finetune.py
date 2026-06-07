@@ -222,9 +222,11 @@ Fine-tune runbook (uplift / distillation SFT; DGX Spark / GB10):
  5. launch_job: build_container_train_command(<name>)  (DETACHED). Training runs INSIDE model-forge-posttrain-tf5
       (the host .venv is torch+cpu and run.sh uses systemd-run which fails over SSH); the container has GB10 torch +
       transformers 5.x + trl/peft/bnb. Poll to done; the LoRA adapter lands in the config's model.output_dir.
- 6. Eval-gate: serve the adapter (model-forge serve honors VLLM_ENABLE_LORA + MODEL_FORGE_LORA_MODULES) ->
-      forge eval <family> <variant> --internal, and compare the capability_preservation_challenge pass rate vs the
-      BASE model. Capability must not regress; report the delta.
+ 6. Eval-gate. For a TASK (verifiable) fine-tune: the self-contained held-out gate — eval_gate.write_eval_gate
+      (base, adapter, a HELD-OUT {prompt,answer} JSONL) + build_eval_gate_command(<name>) via launch_job; it
+      scores base-vs-adapter with the training reward and writes a PASS/REGRESSION verdict to result.json.
+      For an UPLIFT capability-regression check: serve the adapter (model-forge serve honors VLLM_ENABLE_LORA +
+      MODEL_FORGE_LORA_MODULES) -> forge eval --internal, compare capability_preservation_challenge vs BASE.
  7. Watch the loss/grad logs for repetition/format degeneration (the gravity collapse); if it degenerates,
       lower LR and re-run from the last good checkpoint.
 Teacher-distillation data: generate with model_forge.data.factory (teacher = a strong model), format each

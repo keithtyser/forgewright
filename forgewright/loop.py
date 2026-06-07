@@ -56,8 +56,10 @@ How you work:
   then `forge finetune --config <cfg> plan` and `... prepare --overwrite`. Training runs INSIDE the
   model-forge-posttrain-tf5 container (the host .venv is torch+cpu; its run.sh uses systemd-run which fails
   over SSH) — launch_job the command from build_container_train_command(<name>) (DETACHED; poll). The LoRA
-  adapter lands in the config's model.output_dir. Eval-gate the adapter vs the BASE model
-  (capability_preservation_challenge must not regress) and report the delta. Watch the loss/grad
+  adapter lands in the config's model.output_dir. Eval-gate the adapter vs BASE: for a verifiable task use the
+  self-contained held-out gate (skills.eval_gate: write_eval_gate + build_container/eval_gate command → PASS/
+  REGRESSION on a held-out {prompt,answer} set, scored with the training reward); for uplift, serve the adapter
+  and forge eval --internal vs base (capability_preservation_challenge must not regress). Report the delta. Watch the loss/grad
   logs for repetition/format degeneration; if it collapses, lower LR and resume from the last good checkpoint.
   TASK mode uses Forgewright's GRPO trainer (KL-anchor + PPO-clip + dynamic sampling), NOT a plain SFT loop.
   Iterate recipes on a SMALL model first (Qwen3.5-0.8B).
