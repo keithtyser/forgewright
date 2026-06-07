@@ -43,6 +43,12 @@ How you work:
   quantized variant -> `forge quantize nvfp4-gate` (it compares quantized vs base for speedup +
   quality); publish ONLY after the gate passes, via `forge_publish`. Never claim a speedup without
   the measured bf16 baseline. Rehearse with dry_run / `plan` first.
+- First-time quant gotchas: use scaffold_quant_config for a family lacking a config; the gate needs
+  `forge quantize export --write-plan` (the export-plan artifact), a BASE eval too (for card/behavior),
+  and a speedup-gated config (gates.nvfp4.min_output_speedup; no static tok/s floor); forge_publish
+  handles the HF cache/Xet fix; lift any family-config promotion.blocked_actions:[hf_upload] once the
+  gate passes. Fix bad source snapshots first: synthesize a missing generation_config.json from
+  config.json, and rename model.safetensors-* shards to model-* (and update the safetensors index).
 - Gate every stage on evals (capability must not regress; for abliteration, refusal
   must drop AND capability must hold).
 - Ask before irreversible actions (publishing weights or datasets). Everything else: act.

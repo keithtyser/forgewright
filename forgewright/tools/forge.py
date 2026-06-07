@@ -33,7 +33,14 @@ class ForgeRunner:
     def available(self) -> bool:
         return (self.repo / "forge").exists()
 
-    def run(self, args: str, *, dry_run: bool = False, timeout: int = 3600) -> ToolResult:
+    def run(
+        self,
+        args: str,
+        *,
+        dry_run: bool = False,
+        timeout: int = 3600,
+        extra_env: dict | None = None,
+    ) -> ToolResult:
         if not self.available():
             return ToolResult(
                 False,
@@ -43,6 +50,8 @@ class ForgeRunner:
         env = dict(os.environ)
         if dry_run:
             env["MODEL_FORGE_DRY_RUN"] = "1"
+        if extra_env:
+            env.update({k: str(v) for k, v in extra_env.items()})
         cmd = ["bash", "forge", *shlex.split(args)]
         try:
             proc = subprocess.run(
@@ -112,4 +121,50 @@ class ForgePublishTool(Tool):
         self.runner = runner or ForgeRunner()
 
     def run(self, args: str, timeout: int = 1800, **_: Any) -> ToolResult:
-        return self.runner.run(f"hf {args}", timeout=timeout)
+        # Bake in the publish workarounds: redirect the HF cache off the root-owned
+        # ~/.cache/huggingface and disable Xet (both caused permission failures).
+        hf_home = os.path.expanduser("~/.forgewright/hf_home")
+        os.makedirs(hf_home, exist_ok=True)
+        return self.runner.run(
+            f"hf {args}",
+            timeout=timeout,
+            extra_env={"HF_HOME": hf_home, "HF_HUB_DISABLE_XET": "1"},
+        )
+
+
+class ScaffoldQuantConfigTool(Tool):
+    name = "scaffold_quant_config"
+    description = (
+        "Generate a model-forge NVFP4 ModelOpt quant config for a family (speedup-based gate, no "
+        "static tok/s floor) at configs/quantization/<family>_nvfp4_modelopt.yaml. Run this before "
+        "quantizing a family that lacks a config. arch: 'qwen' or 'gemma'."
+    )
+    risk = "write"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "family": {"type": "string"},
+            "arch": {"type": "string", "description": "qwen | gemma (default qwen)"},
+            "source_variant": {"type": "string", "description": "default 'base'"},
+            "overwrite": {"type": "boolean"},
+        },
+        "required": ["family"],
+    }
+
+    def __init__(self, runner: ForgeRunner | None = None) -> None:
+        self.runner = runner or ForgeRunner()
+
+    def run(
+        self, family: str, arch: str = "qwen", source_variant: str = "base", overwrite: bool = False, **_: Any
+    ) -> ToolResult:
+        from forgewright.skills.quantize import write_quant_config
+
+        if not self.runner.available():
+            return ToolResult(False, f"model-forge not found at {self.runner.repo}")
+        try:
+            cfg = write_quant_config(
+                self.runner.repo, family, arch=arch, source_variant=source_variant, overwrite=overwrite
+            )
+        except Exception as e:  # noqa: BLE001
+            return ToolResult(False, f"scaffold failed: {e}")
+        return ToolResult(True, f"quant config at {cfg}", {"path": str(cfg)})
