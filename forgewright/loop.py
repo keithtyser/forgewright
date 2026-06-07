@@ -1,14 +1,14 @@
 """The agent loop: plan -> act (tool) -> observe -> reflect, until the goal is met.
 
 Model-agnostic (any Brain), tool-driven (any ToolRegistry), with a permission gate,
-an append-only ledger, a context manager, and a doom-loop guard. This is the core
-that the ML-ops skills plug into.
+an append-only ledger, a context manager, a doom-loop guard, and an optional live
+reporter (for the interactive CLI). This is the core the ML-ops skills plug into.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from forgewright.brain.provider import Brain, ToolCall
 from forgewright.context.manager import ContextManager
@@ -62,6 +62,7 @@ class Agent:
         context: Optional[ContextManager] = None,
         max_steps: int = 80,
         system_prompt: str = SYSTEM_PROMPT,
+        reporter: Optional[Callable[[str, dict], object]] = None,
     ) -> None:
         self.brain = brain
         self.tools = tools
@@ -69,12 +70,21 @@ class Agent:
         self.ledger = ledger
         self.ctx = context or ContextManager(system_prompt=system_prompt)
         self.max_steps = max_steps
+        self.reporter = reporter
 
     def _log(self, kind: str, **data: object) -> None:
         if self.ledger:
             self.ledger.event(kind, **data)
 
+    def _emit(self, kind: str, data: dict) -> None:
+        if self.reporter:
+            try:
+                self.reporter(kind, data)
+            except Exception:  # noqa: BLE001 - display must never break the loop
+                pass
+
     def run(self, goal: str) -> LoopResult:
+        """Run one user turn to completion (reuses the persistent context across calls)."""
         self.ctx.add_user(goal)
         self._log("goal", goal=goal)
         recent: list[str] = []
@@ -88,6 +98,10 @@ class Agent:
                 content=turn.content[:2000],
                 tool_calls=[tc.name for tc in turn.tool_calls],
                 usage=turn.usage,
+            )
+            self._emit(
+                "assistant",
+                {"content": turn.content, "tool_calls": [tc.name for tc in turn.tool_calls], "usage": turn.usage},
             )
 
             if not turn.tool_calls:
@@ -103,6 +117,10 @@ class Agent:
                     args=tc.arguments,
                     ok=result.ok,
                     output=result.output[:2000],
+                )
+                self._emit(
+                    "tool",
+                    {"tool": tc.name, "args": tc.arguments, "ok": result.ok, "output": result.output},
                 )
             self.ctx.maybe_compact()
 

@@ -112,6 +112,93 @@ def run(
     console.print(f"[dim]done={result.done} · steps={result.steps} · ledger={ledger.path}[/]")
 
 
+def _format_args(args: dict) -> str:
+    s = ", ".join(f"{k}={v!r}" for k, v in args.items())
+    return s[:100] + ("…" if len(s) > 100 else "")
+
+
+def _live_reporter(console: Console):
+    """Print the agent's assistant text + tool calls/results live (for interactive mode)."""
+
+    def report(kind: str, data: dict) -> None:
+        if kind == "assistant":
+            text = (data.get("content") or "").strip()
+            if text:
+                console.print(text)
+            for name in data.get("tool_calls", []):
+                console.print(f"[cyan]→ {name}[/]")
+        elif kind == "tool":
+            mark = "[green]✓[/]" if data.get("ok") else "[red]✗[/]"
+            console.print(f"  {mark} [bold]{data.get('tool')}[/] [dim]{_format_args(data.get('args', {}))}[/]")
+            out = (data.get("output") or "").strip()
+            if out:
+                console.print(f"  [dim]{out if len(out) <= 500 else out[:500] + ' …'}[/]")
+
+    return report
+
+
+@cli.command()
+def interactive(
+    brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
+    hardware: Optional[str] = typer.Option(None, "--hardware", help="Targets: 'local,ssh://user@host/workdir'."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions."),
+    max_steps: int = typer.Option(80, "--max-steps", help="Max agent steps per message."),
+    config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
+) -> None:
+    """Interactive Forgewright session (the default). Chat with the agent across turns."""
+    settings = Settings.load(config)
+    provider = parse_brain_arg(brain) if brain else settings.provider()
+    targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
+
+    def ask(tool, args) -> bool:
+        return typer.confirm(f"Allow {tool.name} ({tool.risk})? args={_format_args(args)}")
+
+    policy = PermissionPolicy(ask_fn=None if yes else ask, auto_approve=yes)
+    run_id = time.strftime("sess-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    ledger = Ledger(run_id, settings.ledger_dir)
+    agent = Agent(
+        brain=Brain(provider),
+        tools=build_registry(),
+        permissions=policy,
+        ledger=ledger,
+        context=ContextManager(SYSTEM_PROMPT),
+        max_steps=max_steps,
+        reporter=_live_reporter(console),
+    )
+
+    hw_desc = ", ".join(t.name for t in targets if t) or "local"
+    console.print(f"[bold cyan]Forgewright[/] interactive · brain={provider.litellm_model()} · hw={hw_desc}")
+    console.print("[dim]Type a goal. /exit to quit · Ctrl-C aborts the current turn.[/]\n")
+
+    seeded = False
+    while True:
+        try:
+            msg = console.input("[bold green]you›[/] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]bye[/]")
+            break
+        if not msg:
+            continue
+        if msg in ("/exit", "/quit", "exit", "quit"):
+            console.print("[dim]bye[/]")
+            break
+        if not seeded:
+            msg = f"Available hardware targets: {hw_desc}.\n\n{msg}"
+            seeded = True
+        try:
+            result = agent.run(msg)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]· turn aborted ·[/]")
+            continue
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]error:[/] {e}")
+            continue
+        if not result.done:
+            console.print(f"[yellow]· stopped: {result.final} (steps={result.steps}) ·[/]")
+        console.print()
+    console.print(f"[dim]ledger: {ledger.path}[/]")
+
+
 @cli.command()
 def doctor() -> None:
     """Check environment, config, and GPUs."""
@@ -132,13 +219,15 @@ def version() -> None:
     console.print(__version__)
 
 
-_KNOWN = {"run", "doctor", "version"}
+_KNOWN = {"run", "doctor", "version", "interactive"}
 
 
 def app() -> None:
-    """Console-script entry: route a bare goal to `run`, else dispatch normally."""
+    """Console-script entry: no args -> interactive; a bare goal -> headless `run`."""
     argv = sys.argv[1:]
-    if argv and argv[0] not in _KNOWN and not argv[0].startswith("-"):
+    if not argv:
+        sys.argv.insert(1, "interactive")
+    elif argv[0] not in _KNOWN and not argv[0].startswith("-"):
         sys.argv.insert(1, "run")
     cli()
 
