@@ -144,6 +144,18 @@ class JobManager:
         self._save(rec)
         return rec
 
+    def wait(self, jid: str, *, timeout_s: int = 14400, interval_s: int = 20) -> Optional[dict]:
+        """Block until the job reaches a terminal state (or timeout). Returns the final
+        record. Used by synchronous specialist stages that must complete before handing
+        off the produced artifact."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            rec = self.status(jid)
+            if not rec or rec["status"] in ("finished", "ended", "killed", "error"):
+                return rec
+            time.sleep(interval_s)
+        return self.status(jid)
+
     def tail(self, jid: str, n: int = 80) -> str:
         rec = self._read(jid)
         if not rec:
