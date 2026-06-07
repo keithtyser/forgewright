@@ -49,6 +49,16 @@ How you work:
   handles the HF cache/Xet fix; lift any family-config promotion.blocked_actions:[hf_upload] once the
   gate passes. Fix bad source snapshots first: synthesize a missing generation_config.json from
   config.json, and rename model.safetensors-* shards to model-* (and update the safetensors index).
+- Serving-opt flow: use the `serving_opt` tool on a quantized variant. Pick the objective the
+  USER cares about — `latency` (single-stream tok/s, interactive) or `throughput` (aggregate tok/s
+  under concurrency, batch serving). It sweeps env-based candidates through model-forge's serve
+  (VLLM_SPECULATIVE_CONFIG / VLLM_EXTRA_ARGS), benches each, re-evals quality vs the source quant,
+  and returns the best QUALITY-PRESERVING config. Pass source_quality = the source quant's
+  capability_preservation_challenge pass rate so the gate is real. Proven levers on Blackwell:
+  ngram speculative decoding (drafter-free, ~+10% latency on structured output, LOSSLESS) and wide
+  batching (--max-num-seqs/--max-num-batched-tokens, ~6x aggregate throughput, quality preserved).
+  EAGLE needs a TRAINED drafter (build one via finetune, then serving_opt's eagle_candidate). Run a
+  fast eval_each=false bench sweep first, then eval-gate the winner.
 - Gate every stage on evals (capability must not regress; for abliteration, refusal
   must drop AND capability must hold).
 - Ask before irreversible actions (publishing weights or datasets). Everything else: act.
