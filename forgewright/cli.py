@@ -207,6 +207,41 @@ def interactive(
 
 
 @cli.command()
+def serve(
+    brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
+    config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
+    max_steps: int = typer.Option(80, "--max-steps", help="Max agent steps per turn."),
+) -> None:
+    """Backend serve loop over stdin/stdout newline-JSON (what the terminal-kit TUI spawns).
+
+    Reads user_msg / approval_response lines; streams assistant / tool / approval_request /
+    done events back. One persistent agent across turns; approvals surface to the frontend.
+    """
+    from forgewright.frontend.server import serve_stdio
+
+    settings = Settings.load(config)
+    provider = parse_brain_arg(brain) if brain else settings.provider()
+    run_id = time.strftime("serve-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    ledger = Ledger(run_id, settings.ledger_dir)
+    agent = Agent(
+        brain=Brain(provider),
+        tools=build_registry(),
+        permissions=PermissionPolicy(),
+        ledger=ledger,
+        context=ContextManager(SYSTEM_PROMPT),
+        max_steps=max_steps,
+    )
+
+    def handle_turn(text: str, reporter, permissions) -> None:
+        # reuse the one agent (persistent context); bind this turn's reporter + approver
+        agent.reporter = reporter
+        agent.permissions = permissions
+        agent.run(text)
+
+    serve_stdio(handle_turn, instream=sys.stdin, outstream=sys.stdout)
+
+
+@cli.command()
 def doctor() -> None:
     """Check environment, config, and GPUs."""
     settings = Settings.load()
@@ -226,7 +261,7 @@ def version() -> None:
     console.print(__version__)
 
 
-_KNOWN = {"run", "doctor", "version", "interactive"}
+_KNOWN = {"run", "doctor", "version", "interactive", "serve"}
 
 
 def app() -> None:

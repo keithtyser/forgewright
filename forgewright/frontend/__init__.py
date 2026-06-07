@@ -13,5 +13,13 @@ from forgewright.frontend.bridge import (
     event_reporter,
     json_line_emitter,
 )
+from forgewright.frontend.server import BackendServer, route, serve_stdio
 
-__all__ = ["event_reporter", "json_line_emitter", "StreamApprover"]
+__all__ = [
+    "event_reporter",
+    "json_line_emitter",
+    "StreamApprover",
+    "BackendServer",
+    "serve_stdio",
+    "route",
+]
