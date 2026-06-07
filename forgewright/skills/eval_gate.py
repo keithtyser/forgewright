@@ -47,7 +47,7 @@ from typing import Optional
 import torch
 from datasets import load_dataset
 from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoTokenizer
 
 cfg = json.loads(Path(sys.argv[sys.argv.index("--config") + 1]).read_text())
 
@@ -57,6 +57,30 @@ tok = AutoTokenizer.from_pretrained(cfg["base"])
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 ds = load_dataset("json", data_files=cfg["holdout"], split="train")
+adapter = os.path.expanduser(cfg["adapter"])
+
+def _lora_b_sum(m):
+    return sum(float(p.abs().sum()) for n, p in m.named_parameters() if "lora_B" in n)
+
+def _load_base(loader):
+    return loader.from_pretrained(cfg["base"], dtype=torch.bfloat16).to("cuda")
+
+# Different trainers load this model as different classes (TRL -> ForConditionalGeneration
+# with the text tower under .language_model; model-forge SFT -> flat ForCausalLM). The
+# adapter keys only match one of them, so pick the loader where the adapter ACTUALLY
+# applies (non-zero lora_B). Fail loudly if none does — never report a silent no-op gate.
+def load_pair():
+    for loader in (AutoModelForImageTextToText, AutoModelForCausalLM):
+        try:
+            base = _load_base(loader)
+        except Exception:
+            continue
+        ft = PeftModel.from_pretrained(base, adapter)
+        if _lora_b_sum(ft) > 0:
+            return _load_base(loader), ft  # fresh base (clean) + adapter-applied model
+    raise RuntimeError(
+        "adapter did not apply with any loader (lora_B stayed 0) — "
+        "base/adapter architecture mismatch; the gate would be meaningless")
 
 def generate(model, prompt):
     msgs = [{{"role": "user", "content": prompt}}]
@@ -72,9 +96,8 @@ def score(model):
         correct += numeric_correctness_reward(comp, ex["answer"])
     return correct / max(len(ds), 1)
 
-base = AutoModelForCausalLM.from_pretrained(cfg["base"], dtype=torch.bfloat16, device_map="cuda")
+base, ft = load_pair()
 base_score = score(base)
-ft = PeftModel.from_pretrained(base, os.path.expanduser(cfg["adapter"]))
 cand_score = score(ft)
 
 delta = cand_score - base_score
@@ -138,6 +161,8 @@ def build_eval_gate_command(
         f"mkdir -p {hf_home} && docker run --rm --gpus {gpus} "
         f'--user "$(id -u):$(id -g)" -e HOME="$HOME" --shm-size=16g '
         f"-e HF_HOME={hf_home} -e HF_DATASETS_CACHE={hf_home}/datasets -e HF_HUB_DISABLE_XET=1 "
+        f"-e XDG_CACHE_HOME={hf_home}/cache -e TRITON_CACHE_DIR={hf_home}/triton "
+        f"-e TORCHINDUCTOR_CACHE_DIR={hf_home}/inductor "
         f"-v {repo}:{repo} -v {models_dir}:{models_dir} -v {hf_home}:{hf_home} -w {repo} "
         f"--entrypoint python3 {image} {run_dir}/eval_gate.py --config {run_dir}/config.json"
     )

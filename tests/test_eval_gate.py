@@ -34,6 +34,10 @@ def test_render_eval_gate_is_self_contained_and_valid():
     assert "def numeric_correctness_reward" in src   # reward injected, no forgewright import
     assert "PeftModel.from_pretrained" in src
     assert "expanduser(cfg[" in src                   # ~ handled
+    # robust loader: tries both arch classes and FAILS LOUDLY if the adapter is a no-op
+    assert "AutoModelForImageTextToText" in src and "AutoModelForCausalLM" in src
+    assert "lora_B" in src
+    assert "did not apply with any loader" in src
 
 
 def test_write_eval_gate(tmp_path: Path):
