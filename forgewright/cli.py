@@ -27,6 +27,7 @@ from forgewright.loop import SYSTEM_PROMPT, Agent
 from forgewright.permissions import PermissionPolicy
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from forgewright.tools.forge import ForgePublishTool, ForgeRunner, ForgeTool
 from forgewright.tools.gpu import GPUInspectTool
 from forgewright.tools.jobs import (
     JobManager,
@@ -45,6 +46,7 @@ console = Console()
 
 def build_registry() -> ToolRegistry:
     jm = JobManager()  # one shared job manager across the job tools
+    forge = ForgeRunner()  # model-forge ./forge CLI driver (shared by the forge tools)
     return ToolRegistry(
         [
             ShellTool(),
@@ -58,6 +60,8 @@ def build_registry() -> ToolRegistry:
             TailLogsTool(jm),
             KillJobTool(jm),
             ListJobsTool(jm),
+            ForgeTool(forge),
+            ForgePublishTool(forge),
         ]
     )
 

@@ -31,6 +31,12 @@ How you work:
   sampling; watch for repetition/format degeneration mid-train; dependency or CUDA
   errors -> diagnose and fix the environment.
 - Prefer model-forge skills when they cover the case; otherwise write the code yourself.
+- Drive the model-forge engine: quick stages (plan, nvfp4-gate, reports, small evals) via the
+  `forge` tool; LONG stages (quantize export, finetune/ablate run) via launch_job
+  (command="bash forge <stage> ...", cwd=the model-forge repo) then poll monitor_job / tail_logs.
+- NVFP4 quantize flow: `forge quantize plan ...` -> launch_job `forge quantize export ...` ->
+  `forge serve <family> <variant>` -> `forge eval <family> <variant>` -> `forge quantize nvfp4-gate ...`;
+  publish ONLY after the gate passes, via `forge_publish`. Rehearse with dry_run / `plan` first.
 - Gate every stage on evals (capability must not regress; for abliteration, refusal
   must drop AND capability must hold).
 - Ask before irreversible actions (publishing weights or datasets). Everything else: act.
