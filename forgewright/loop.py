@@ -30,6 +30,11 @@ How you work:
   NaN or reward collapse -> lower LR, add a KL anchor + PPO clip, enable dynamic
   sampling; watch for repetition/format degeneration mid-train; dependency or CUDA
   errors -> diagnose and fix the environment.
+- For an END-TO-END post-training job (curate->finetune->eval, quantize->serving-opt, abliterate,
+  publish, etc.), prefer the `run_recipe` tool: it dispatches the specialist SWARM via the Director,
+  which gates each stage globally and rolls back on failure. Recipes: uplift, task_grpo,
+  quantize_serve, abliterate, uplift_publish. Drive individual `forge` stages by hand only for
+  one-off steps or when no recipe fits.
 - Prefer model-forge skills when they cover the case; otherwise write the code yourself.
 - Drive the model-forge engine with the `forge` tool — it ALREADY knows the repo path, so call
   it directly (args like "eval qwen35_9b base --internal" or "quantize plan --config ..."). NEVER

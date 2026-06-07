@@ -27,6 +27,8 @@ from forgewright.loop import SYSTEM_PROMPT, Agent
 from forgewright.permissions import PermissionPolicy
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from forgewright.agents.run_recipe import RunRecipeTool
+from forgewright.registry import Registry
 from forgewright.skills.abliterate import ScaffoldAbliterateConfigTool
 from forgewright.skills.finetune import ScaffoldFinetuneConfigTool
 from forgewright.skills.serving_opt import ServingOptTool
@@ -45,6 +47,14 @@ from forgewright.tools.ssh import SSHTool
 
 cli = typer.Typer(add_completion=False, help="Forgewright — autonomous post-training harness.")
 console = Console()
+
+
+def _bind_swarm(agent, reporter, permissions) -> None:
+    """Give the run_recipe tool this turn's transcript reporter + approval policy, so the
+    Director swarm it dispatches streams into the one chat and its approvals surface here."""
+    tool = agent.tools.get("run_recipe")
+    if tool is not None and hasattr(tool, "bind"):
+        tool.bind(reporter=reporter, permissions=permissions)
 
 
 def build_registry() -> ToolRegistry:
@@ -69,6 +79,7 @@ def build_registry() -> ToolRegistry:
             ScaffoldFinetuneConfigTool(forge),
             ScaffoldAbliterateConfigTool(forge),
             ServingOptTool(forge, jm),
+            RunRecipeTool(registry=Registry(), jobs=jm, forge=forge),
         ]
     )
 
@@ -111,6 +122,7 @@ def run(
         context=ContextManager(SYSTEM_PROMPT),
         max_steps=max_steps,
     )
+    _bind_swarm(agent, None, policy)   # headless: swarm uses the run's approval policy
     console.print(f"[bold cyan]Forgewright[/] {run_id} · brain={provider.litellm_model()} · hw={hw_desc}")
     console.print(f"[dim]goal:[/] {goal}\n")
     result = agent.run(augmented)
@@ -172,6 +184,7 @@ def interactive(
         max_steps=max_steps,
         reporter=_live_reporter(console),
     )
+    _bind_swarm(agent, agent.reporter, policy)   # let chat dispatch the swarm into this transcript
 
     hw_desc = ", ".join(t.name for t in targets if t) or "local"
     console.print(f"[bold cyan]Forgewright[/] interactive · brain={provider.litellm_model()} · hw={hw_desc}")
@@ -236,6 +249,7 @@ def serve(
         # reuse the one agent (persistent context); bind this turn's reporter + approver
         agent.reporter = reporter
         agent.permissions = permissions
+        _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
         agent.run(text)
 
     serve_stdio(handle_turn, instream=sys.stdin, outstream=sys.stdout)
