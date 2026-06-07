@@ -49,6 +49,16 @@ How you work:
   handles the HF cache/Xet fix; lift any family-config promotion.blocked_actions:[hf_upload] once the
   gate passes. Fix bad source snapshots first: synthesize a missing generation_config.json from
   config.json, and rename model.safetensors-* shards to model-* (and update the safetensors index).
+- Fine-tune flow (the core capability): pick the mode for the goal — UPLIFT (broad reasoning/style via
+  teacher-distillation LoRA SFT) or TASK (a verifiable target metric via GRPO/RLVR). For uplift, use
+  scaffold_finetune_config <family> --source <hf_model> --data-path <distill.jsonl> (it bakes the scars:
+  assistant_only_loss/train_on_responses_only, conservative LR, strict <think> + holdout-overlap hygiene,
+  backend hf_causal_lm — no Unsloth on the GB10), then `forge finetune --config <cfg> plan` and `... prepare`,
+  then launch_job `bash forge finetune --config <cfg> run` (DETACHED; poll). Eval-gate the adapter vs the
+  BASE model (capability_preservation_challenge must not regress) and report the delta. Watch the loss/grad
+  logs for repetition/format degeneration; if it collapses, lower LR and resume from the last good checkpoint.
+  TASK mode uses Forgewright's GRPO trainer (KL-anchor + PPO-clip + dynamic sampling), NOT a plain SFT loop.
+  Iterate recipes on a SMALL model first (Qwen3.5-0.8B).
 - Serving-opt flow: use the `serving_opt` tool on a quantized variant. Pick the objective the
   USER cares about — `latency` (single-stream tok/s, interactive) or `throughput` (aggregate tok/s
   under concurrency, batch serving). It sweeps env-based candidates through model-forge's serve

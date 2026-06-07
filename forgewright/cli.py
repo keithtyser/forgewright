@@ -27,6 +27,7 @@ from forgewright.loop import SYSTEM_PROMPT, Agent
 from forgewright.permissions import PermissionPolicy
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.files import EditFileTool, ReadFileTool, WriteFileTool
+from forgewright.skills.finetune import ScaffoldFinetuneConfigTool
 from forgewright.skills.serving_opt import ServingOptTool
 from forgewright.tools.forge import ForgePublishTool, ForgeRunner, ForgeTool, ScaffoldQuantConfigTool
 from forgewright.tools.gpu import GPUInspectTool
@@ -64,6 +65,7 @@ def build_registry() -> ToolRegistry:
             ForgeTool(forge),
             ForgePublishTool(forge),
             ScaffoldQuantConfigTool(forge),
+            ScaffoldFinetuneConfigTool(forge),
             ServingOptTool(forge, jm),
         ]
     )
