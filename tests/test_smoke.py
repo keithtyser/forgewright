@@ -16,6 +16,9 @@ def test_parse_brain_arg():
     assert p.api_base == "http://localhost:8000/v1"
     assert p.litellm_model() == "hosted_vllm/qwen3.5"
     assert parse_brain_arg("anthropic:claude-opus-4-8").litellm_model() == "anthropic/claude-opus-4-8"
+    r = parse_brain_arg("openrouter:deepseek/deepseek-v4-pro")
+    assert r.kind == "openrouter"
+    assert r.litellm_model() == "openrouter/deepseek/deepseek-v4-pro"
 
 
 def test_parse_hardware_arg():

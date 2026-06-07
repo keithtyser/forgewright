@@ -48,10 +48,13 @@ class ProviderConfig(BaseModel):
 
     def litellm_model(self) -> str:
         prefix = _KIND_PREFIX.get(self.kind)
-        # Pass through already-qualified model ids (those containing a "/").
-        if prefix and "/" not in self.model:
-            return f"{prefix}/{self.model}"
-        return self.model
+        if not prefix:
+            return self.model
+        # Don't double-prefix if already qualified with this provider; otherwise
+        # always prepend it (OpenRouter ids contain "/" yet still need the prefix).
+        if self.model.startswith(f"{prefix}/"):
+            return self.model
+        return f"{prefix}/{self.model}"
 
     def resolved_api_base(self) -> Optional[str]:
         return self.api_base or _KIND_DEFAULT_BASE.get(self.kind)
