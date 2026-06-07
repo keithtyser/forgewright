@@ -12,11 +12,15 @@ from forgewright.skills.serving_opt import (
 
 def test_default_candidates():
     lat = {c.name: c for c in default_candidates("latency")}
-    assert {"baseline", "ngram_spec", "eager_lowlat"} <= set(lat)
-    assert "--speculative-config" in lat["ngram_spec"].extra_flags
-    assert lat["baseline"].extra_flags == []
+    assert {"baseline", "ngram_spec", "ngram_lowlat"} <= set(lat)
+    # ngram candidate sets the serve-time env model-forge honors
+    assert "ngram" in lat["ngram_spec"].env["VLLM_SPECULATIVE_CONFIG"]
+    assert lat["baseline"].env == {}
+    # low-latency candidate pins single-sequence batching on top of spec-decode
+    assert "--max-num-seqs 1" in lat["ngram_lowlat"].env["VLLM_EXTRA_ARGS"]
     thr = {c.name: c for c in default_candidates("throughput")}
     assert "batch_throughput" in thr
+    assert "--max-num-seqs" in thr["batch_throughput"].env["VLLM_EXTRA_ARGS"]
 
 
 def test_select_best_latency_excludes_quality_regressions():
