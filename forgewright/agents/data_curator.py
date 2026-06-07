@@ -82,6 +82,13 @@ def curate_messages_rows(rows: Sequence[dict]) -> tuple[list[dict], dict[str, in
     return kept, drops
 
 
+def _count_jsonl(path: Path) -> int:
+    try:
+        return sum(1 for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip())
+    except OSError:
+        return 0
+
+
 def _read_jsonl(path: Path) -> list[dict]:
     out = []
     for ln in path.read_text(encoding="utf-8").splitlines():
@@ -116,10 +123,14 @@ class DataCurator(Specialist):
     def run(self, inputs: Sequence[Artifact], goal: str = "", *, mode: str = "curate_seed",
             seed_paths: Optional[Sequence[str]] = None, family: str = "model",
             source: str = "Qwen/Qwen3.5-0.8B", run_name: Optional[str] = None,
-            holdout: Optional[str] = None, out_path: Optional[str] = None) -> Artifact:
+            holdout: Optional[str] = None, out_path: Optional[str] = None,
+            provider: str = "template") -> Artifact:
         run_name = run_name or f"{family}_curated_v0"
         if mode == "distill":
-            return self._distill(goal, family, source, run_name)
+            seeds = list(seed_paths or [])
+            if not seeds:
+                raise ValueError("distill mode needs seed_paths (the seed JSONL to expand from)")
+            return self._distill(goal, family, source, run_name, seed_path=seeds[0], provider=provider)
         return self._curate_seed(seed_paths or [], family, source, run_name, holdout, out_path)
 
     def _curate_seed(self, seed_paths, family, source, run_name, holdout, out_path) -> Artifact:
@@ -147,20 +158,29 @@ class DataCurator(Specialist):
         self.registry.register(art)
         return art
 
-    def _distill(self, goal, family, source, run_name) -> Artifact:
-        # Teacher-distillation via the data factory (template provider path shown; swap to
-        # --provider openai_compatible with a configured teacher endpoint for real CoT).
-        variant = "curated_v0"
-        steps = ["generate", "judge", "verify", "filter", "pack"]
-        for step in steps:
-            res = self.forge.run(f"data {step} {family} {variant} --smoke", timeout=3600)
-            self._emit("tool", tool=f"data {step}", ok=res.ok, output=res.output[:200])
+    def _distill(self, goal, family, source, run_name, *, seed_path: str, provider: str = "template",
+                 variant: str = "curated_v0") -> Artifact:
+        """Teacher-distillation via the data factory. provider='template' validates the
+        pipeline with no LLM; provider='openai_compatible' uses a teacher endpoint (set the
+        provider's *_env vars, e.g. OpenRouter/local vLLM) for real <think> CoT."""
+        from forgewright.skills.data_factory import write_dataset_config
+
+        write_dataset_config(self.forge.repo, family, seed_path=seed_path, variant=variant, overwrite=True)
+        self._emit("assistant", content=f"distill {family}/{variant} via factory (provider={provider})")
+        for step in ["generate", "judge", "verify", "filter", "pack"]:
+            res = self.forge.run(f"data {step} {family} {variant} --smoke --provider {provider}", timeout=3600)
+            self._emit("tool", tool=f"data {step}", ok=res.ok, output=res.output[:160])
             if not res.ok:
                 raise RuntimeError(f"data {step} failed: {res.output[:300]}")
         out = f"datasets/generated/{family}_{variant}/dataset.jsonl"
+        rows = _count_jsonl(Path(self.forge.repo) / out)
         art = DatasetArtifact(
-            uri=out, produced_by=self.role, gate=Gate(passed=True, verdict="DISTILLED"),
-            meta={"family": family, "source": source, "run_name": run_name, "format": "messages", "mode": "distill"},
+            uri=out, produced_by=self.role,
+            gate=Gate(passed=rows > 0, metrics={"rows": rows},
+                      verdict="DISTILLED" if rows > 0 else "FAIL: factory produced no rows"),
+            meta={"family": family, "source": source, "run_name": run_name, "format": "messages",
+                  "mode": "distill", "provider": provider, "rows": rows},
         )
         self.registry.register(art)
+        self._emit("tool", tool="register_artifact", ok=rows > 0, output=f"DatasetArtifact {art.id} ({rows} rows)")
         return art
