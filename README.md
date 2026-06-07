@@ -43,6 +43,11 @@ Specialists never call each other directly. A producer registers a typed `Artifa
 handle to the bytes plus provenance and its gate result); the consumer pulls it from the
 **registry**, which doubles as the provenance graph (`register / get / latest / lineage`).
 
+The Director runs named **recipes** (chains over the roster, e.g. `uplift`, `task_grpo`,
+`quantize_serve`, `uplift_publish`, `abliterate`). If a stage's gate fails, the Director
+halts and runs **saga compensations** in reverse, so a regression never flows downstream
+and side effects (like a live served endpoint) get torn down.
+
 ## Capabilities (proven on a DGX Spark GB10, sm_121)
 
 - **Quantize**: NVFP4 (NVIDIA ModelOpt) with a speedup-based gate (no static floor).

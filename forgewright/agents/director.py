@@ -9,7 +9,7 @@ regression never silently flows downstream.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from forgewright.agents.base import Specialist, label_reporter
 from forgewright.contracts import Artifact
@@ -22,10 +22,16 @@ Reporter = "callable"
 
 @dataclass
 class Step:
-    """One stage of a recipe: which specialist + how to build/run it."""
+    """One stage of a recipe: which specialist + how to build/run it.
+
+    `compensate(artifact)` is an optional saga rollback for this step's output, run by the
+    Director (in reverse) when a LATER step fails (e.g. stop a served endpoint, mark a
+    superseded artifact). Most stages produce immutable files and need none.
+    """
     specialist_cls: type[Specialist]
     init_kwargs: dict = field(default_factory=dict)   # constructor kwargs (host, tolerance, runner, jobs)
     run_kwargs: dict = field(default_factory=dict)     # run() kwargs (holdout, max_steps)
+    compensate: Optional[Callable[[Artifact], None]] = None
 
 
 @dataclass
@@ -75,6 +81,7 @@ class Director:
         the first), gated globally. Returns the produced artifacts (lineage) + final."""
         current: list[Artifact] = list(seed_inputs or [])
         produced: list[Artifact] = []
+        completed: list[tuple[Step, Artifact]] = []   # for saga compensation
         self._emit("assistant", content=f"plan: {' -> '.join(s.specialist_cls.role for s in recipe)}")
 
         for step in recipe:
@@ -93,15 +100,28 @@ class Director:
                 art = spec.run(current, goal, **step.run_kwargs)
             except Exception as e:  # noqa: BLE001 - surface the failing stage, don't crash the chain
                 self._emit("tool", tool=role, ok=False, output=f"error: {e}")
+                self._compensate(completed)
                 return DirectorResult(False, produced, failed_at=role, reason=str(e))
             produced.append(art)
             if art.gate is not None and not art.gate.passed:
-                self._emit("assistant",
-                           content=f"GLOBAL GATE halt at {role}: {art.gate.verdict}")
+                self._emit("assistant", content=f"GLOBAL GATE halt at {role}: {art.gate.verdict}")
+                self._compensate(completed)   # roll back the steps that DID complete
                 return DirectorResult(False, produced, failed_at=role, reason=art.gate.verdict)
+            completed.append((step, art))
             current = [art]
 
         final = produced[-1] if produced else None
         self._emit("assistant", content=f"recipe complete: {len(produced)} artifacts, "
                    f"lineage {[a.id for a in produced]}")
         return DirectorResult(True, produced, final=final)
+
+    def _compensate(self, completed: "list[tuple[Step, Artifact]]") -> None:
+        """Saga: run each completed step's compensation in reverse (best-effort)."""
+        for step, art in reversed(completed):
+            if step.compensate is None:
+                continue
+            self._emit("assistant", content=f"compensating {step.specialist_cls.role} ({art.id})")
+            try:
+                step.compensate(art)
+            except Exception as e:  # noqa: BLE001 - compensation is best-effort
+                self._emit("tool", tool="compensate", ok=False, output=str(e))
