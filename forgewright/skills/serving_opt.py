@@ -16,10 +16,12 @@ pure + unit-tested; launch/bench/eval shell out to model-forge and are validated
 """
 from __future__ import annotations
 
+import csv
 import re
 import shlex
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 from forgewright.tools.base import Tool, ToolResult
@@ -165,9 +167,43 @@ class ServingOptimizer:
             total = sum(ex.map(one, range(requests)))
         return total / max(time.time() - start, 1e-6)
 
+    # The capability signal we gate on: 32-case capability-preservation bucket
+    # (the 3-case normal_use_regression bucket is too small to be meaningful).
+    QUALITY_BUCKET = "capability_preservation_challenge"
+    QUALITY_METRIC = "normal_use_regression_pass_rate"
+
     def eval_quality(self, family: str, variant: str) -> Optional[float]:
+        """Run model-forge's canonical internal eval against the *currently running*
+        server (forge eval honors MODEL_FORGE_BASE_URL → the candidate we launched),
+        then read the structured scores.csv it wrote. We parse the CSV (not the rich
+        stdout table) so the gate is deterministic even though the metric name recurs
+        across buckets."""
         res = self.forge.run(f"eval {family} {variant} --internal", timeout=5400)
-        return _parse_metric(res.output, "normal_use_regression_pass_rate")
+        scores = self._locate_scores_csv(res.output)
+        if scores is not None:
+            v = _scores_csv_metric(scores, self.QUALITY_BUCKET, self.QUALITY_METRIC)
+            if v is not None:
+                return v
+        # fall back to stdout scrape if the CSV could not be located/read
+        return _parse_metric(res.output, self.QUALITY_METRIC)
+
+    def _locate_scores_csv(self, eval_stdout: str) -> Optional[Path]:
+        """run_eval prints `Output:  <dir>`; scores.csv lives there. Resolve relative
+        paths against the model-forge repo. Fall back to the newest results/**/scores.csv."""
+        m = re.search(r"Output:\s*(\S+)", eval_stdout)
+        if m:
+            p = Path(m.group(1))
+            if not p.is_absolute():
+                p = Path(self.forge.repo) / p
+            csv_path = p / "scores.csv"
+            if csv_path.exists():
+                return csv_path
+        candidates = sorted(
+            Path(self.forge.repo).glob("results/**/scores.csv"),
+            key=lambda c: c.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
 
     def run(
         self,
@@ -198,6 +234,22 @@ class ServingOptimizer:
             results.append(CandidateResult(c.name, True, single_tps=single, aggregate_tps=agg, quality_pass_rate=q, quality_ok=qok))
             self.stop()
         return results, select_best(results, objective)
+
+
+def _scores_csv_metric(path: Path, bucket: str, metric: str) -> Optional[float]:
+    """Read model-forge's scores.csv (bucket,metric,value,...) and return the value
+    for one (bucket, metric) cell."""
+    try:
+        with path.open(newline="") as fh:
+            for row in csv.DictReader(fh):
+                if row.get("bucket") == bucket and row.get("metric") == metric:
+                    try:
+                        return float(row["value"])
+                    except (KeyError, ValueError):
+                        return None
+    except OSError:
+        return None
+    return None
 
 
 def _parse_metric(text: str, key: str) -> Optional[float]:
