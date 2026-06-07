@@ -1,0 +1,12 @@
+Forgewright TUI frontend
+========================
+
+This terminal UI is built with terminal-kit, an excellent terminal toolkit for Node.js.
+
+  terminal-kit
+  Copyright (c) 2009 - 2024 Cedric Ronvel
+  Licensed under the MIT License
+  https://www.terminal-kit.com/
+  https://github.com/cronvel/terminal-kit
+
+Many thanks to Cedric Ronvel and the terminal-kit contributors.

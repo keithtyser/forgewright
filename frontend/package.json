@@ -1,0 +1,16 @@
+{
+  "name": "forgewright-tui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "terminal-kit TUI frontend for the Forgewright post-training swarm",
+  "license": "Apache-2.0",
+  "author": "Keith Tyser <keithtyser@gmail.com>",
+  "bin": { "forgewright-tui": "forgewright-tui.js" },
+  "scripts": {
+    "start": "node forgewright-tui.js",
+    "render-test": "node forgewright-tui.js --render-test"
+  },
+  "dependencies": {
+    "terminal-kit": "^3.1.2"
+  }
+}

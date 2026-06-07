@@ -72,11 +72,22 @@ Node TUI (see Credits) talking to the Python backend over a newline-delimited JS
 stream, so the swarm stays entirely on the backend. A built-in Python REPL is the headless
 fallback and is used in tests.
 
-## Install
+## Install and run
 
 ```bash
-# Control plane (runs anywhere you type, including Windows):
+# Backend control plane (runs anywhere you type, including Windows):
 pip install -e .
+
+# Conversational TUI (Node):
+cd frontend && npm install && npm start        # spawns `forgewright serve` behind the chat
+```
+
+You can also use the backend directly without the Node UI:
+
+```bash
+forgewright                      # built-in Python REPL (headless fallback)
+forgewright "<goal>" --yes       # one-shot, unattended
+forgewright serve                # newline-JSON event server (what the TUI spawns)
 ```
 
 Heavy training, quantization, and abliteration run inside model-forge's GPU container on a
