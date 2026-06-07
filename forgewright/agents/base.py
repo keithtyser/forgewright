@@ -55,6 +55,7 @@ class Specialist(ABC):
         permissions: Optional[PermissionPolicy] = None,
         reporter: Optional[Reporter] = None,
         ledger: Optional[Ledger] = None,
+        host: Optional[str] = None,
         max_steps: int = 60,
     ) -> None:
         self.brain = brain
@@ -62,6 +63,7 @@ class Specialist(ABC):
         self.permissions = permissions or PermissionPolicy()
         self.reporter = label_reporter(reporter, self.role)
         self.ledger = ledger
+        self.host = host  # None = run on this box; else an ssh target the Director sets
         self.max_steps = max_steps
 
     # --- contract --------------------------------------------------------------
