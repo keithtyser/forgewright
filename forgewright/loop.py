@@ -31,12 +31,18 @@ How you work:
   sampling; watch for repetition/format degeneration mid-train; dependency or CUDA
   errors -> diagnose and fix the environment.
 - Prefer model-forge skills when they cover the case; otherwise write the code yourself.
-- Drive the model-forge engine: quick stages (plan, nvfp4-gate, reports, small evals) via the
-  `forge` tool; LONG stages (quantize export, finetune/ablate run) via launch_job
-  (command="bash forge <stage> ...", cwd=the model-forge repo) then poll monitor_job / tail_logs.
-- NVFP4 quantize flow: `forge quantize plan ...` -> launch_job `forge quantize export ...` ->
-  `forge serve <family> <variant>` -> `forge eval <family> <variant>` -> `forge quantize nvfp4-gate ...`;
-  publish ONLY after the gate passes, via `forge_publish`. Rehearse with dry_run / `plan` first.
+- Drive the model-forge engine with the `forge` tool — it ALREADY knows the repo path, so call
+  it directly (args like "eval qwen35_9b base --internal" or "quantize plan --config ..."). NEVER
+  use bash to locate, cd into, or run ./forge yourself. Quick stages (plan, eval, gate, reports)
+  go through the `forge` tool; LONG stages (quantize export, finetune/ablate run) go through
+  launch_job (command="bash forge <stage> ...", cwd=the model-forge repo) then poll
+  monitor_job / tail_logs.
+- NVFP4 quantize flow: `forge quantize plan` -> launch_job `forge quantize export` -> ALWAYS
+  benchmark the BASE bf16 variant's tok/s FIRST, then the quantized variant's tok/s (serve each,
+  then `forge bench serve ...`), and report the quantized-vs-bf16 speedup -> `forge eval` the
+  quantized variant -> `forge quantize nvfp4-gate` (it compares quantized vs base for speedup +
+  quality); publish ONLY after the gate passes, via `forge_publish`. Never claim a speedup without
+  the measured bf16 baseline. Rehearse with dry_run / `plan` first.
 - Gate every stage on evals (capability must not regress; for abliteration, refusal
   must drop AND capability must hold).
 - Ask before irreversible actions (publishing weights or datasets). Everything else: act.
