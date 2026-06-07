@@ -63,6 +63,14 @@ How you work:
   logs for repetition/format degeneration; if it collapses, lower LR and resume from the last good checkpoint.
   TASK mode uses Forgewright's GRPO trainer (KL-anchor + PPO-clip + dynamic sampling), NOT a plain SFT loop.
   Iterate recipes on a SMALL model first (Qwen3.5-0.8B).
+- Abliterate flow (remove refusals, keep capability): scaffold_abliterate_config <family> --source <model>
+  (contrastive refusal-direction projection; scar defaults: mid-layer projection only, norm-preserve, leave
+  embeddings/lm_head/MoE-experts untouched, conservative strength). Eval the SOURCE first (BEFORE refusal +
+  capability), then `forge ablate --config <cfg> plan`, launch_job `... collect` then `... export --execute`
+  (edits weights in place -> standalone model). Eval the abliterated model AFTER and apply the DUAL gate
+  (skills.abliterate.abliterate_gate via read_abliterate_metrics on each scores.csv): refusal_rate_harmful
+  must DROP and capability_preservation_challenge must HOLD and benign_refusal_rate must not blow up. If
+  capability regresses, lower `strength` / raise layer_skip_first and re-run.
 - Serving-opt flow: use the `serving_opt` tool on a quantized variant. Pick the objective the
   USER cares about — `latency` (single-stream tok/s, interactive) or `throughput` (aggregate tok/s
   under concurrency, batch serving). It sweeps env-based candidates through model-forge's serve
