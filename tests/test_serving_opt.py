@@ -7,6 +7,7 @@ from forgewright.skills.serving_opt import (
     _scores_csv_metric,
     default_candidates,
     default_served_name,
+    eagle_candidate,
     select_best,
 )
 
@@ -20,8 +21,19 @@ def test_default_candidates():
     # low-latency candidate pins single-sequence batching on top of spec-decode
     assert "--max-num-seqs 1" in lat["ngram_lowlat"].env["VLLM_EXTRA_ARGS"]
     thr = {c.name: c for c in default_candidates("throughput")}
-    assert "batch_throughput" in thr
-    assert "--max-num-seqs" in thr["batch_throughput"].env["VLLM_EXTRA_ARGS"]
+    assert {"baseline", "batch_throughput", "batch_throughput_hi"} <= set(thr)
+    assert "--max-num-seqs 64" in thr["batch_throughput"].env["VLLM_EXTRA_ARGS"]
+    assert "--gpu-memory-utilization 0.85" in thr["batch_throughput_hi"].env["VLLM_EXTRA_ARGS"]
+    # latency sweep must not carry batch-throughput knobs, and vice-versa
+    assert "batch_throughput" not in lat
+
+
+def test_eagle_candidate():
+    c = eagle_candidate("/models/qwen35-9b-eagle", num_speculative_tokens=4)
+    cfg = c.env["VLLM_SPECULATIVE_CONFIG"]
+    assert '"method":"eagle"' in cfg
+    assert "/models/qwen35-9b-eagle" in cfg
+    assert '"num_speculative_tokens":4' in cfg
 
 
 def test_select_best_latency_excludes_quality_regressions():

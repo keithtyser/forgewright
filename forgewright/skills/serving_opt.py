@@ -41,29 +41,53 @@ class Candidate:
 
 
 def default_candidates(objective: Objective) -> list[Candidate]:
-    """The sweep. `baseline` is the as-quantized serving config (no extra env)."""
-    cands = [
+    """The sweep. `baseline` is the as-quantized serving config (no extra env).
+
+    Extra args are appended after model-forge's conservative serve defaults
+    (max-num-seqs 2, max-num-batched-tokens 4096, gpu-mem-util 0.60); vLLM argparse
+    takes the last value, so these candidates override those defaults.
+    """
+    if objective == "throughput":
+        # Aggregate-throughput ladder: widen the running batch + KV cache budget.
+        return [
+            Candidate("baseline", {}, "as-quantized serving config"),
+            Candidate(
+                "batch_throughput",
+                {"VLLM_EXTRA_ARGS": "--max-num-seqs 64 --max-num-batched-tokens 16384"},
+                "larger running batch for aggregate throughput",
+            ),
+            Candidate(
+                "batch_throughput_hi",
+                {"VLLM_EXTRA_ARGS": "--max-num-seqs 128 --max-num-batched-tokens 32768 "
+                                    "--gpu-memory-utilization 0.85"},
+                "max batch + KV cache budget (uses the GB10's 128GB unified headroom)",
+            ),
+        ]
+    # latency: spec-decode is the universal (drafter-free) lever; single-seq trims queueing.
+    return [
         Candidate("baseline", {}, "as-quantized serving config"),
         Candidate(
             "ngram_spec",
             {"VLLM_SPECULATIVE_CONFIG": _NGRAM},
             "ngram speculative decoding (no drafter; helps structured/repetitive output)",
         ),
+        Candidate("ngram_lowlat", {"VLLM_SPECULATIVE_CONFIG": _NGRAM, "VLLM_EXTRA_ARGS": "--max-num-seqs 1"},
+                  "spec-decode + single sequence for lowest latency"),
     ]
-    if objective == "throughput":
-        cands.append(
-            Candidate(
-                "batch_throughput",
-                {"VLLM_EXTRA_ARGS": "--max-num-seqs 64 --max-num-batched-tokens 16384"},
-                "larger batch for aggregate throughput",
-            )
-        )
-    else:  # latency
-        cands.append(
-            Candidate("ngram_lowlat", {"VLLM_SPECULATIVE_CONFIG": _NGRAM, "VLLM_EXTRA_ARGS": "--max-num-seqs 1"},
-                      "spec-decode + single sequence for lowest latency")
-        )
-    return cands
+
+
+def eagle_candidate(drafter_path: str, num_speculative_tokens: int = 3) -> Candidate:
+    """EAGLE/EAGLE3 speculative decoding. Unlike ngram (drafter-free), EAGLE needs a
+    *trained* draft head matched to the target model — produce one via the fine-tune
+    slice, then point this at it. Higher acceptance than ngram on free-form text, but
+    only as good as the trained drafter. Not in the default sweep because we don't ship
+    a Qwen3.5 EAGLE head yet."""
+    cfg = (
+        '{"method":"eagle","model":"%s","num_speculative_tokens":%d}'
+        % (drafter_path, num_speculative_tokens)
+    )
+    return Candidate("eagle_spec", {"VLLM_SPECULATIVE_CONFIG": cfg},
+                     f"EAGLE spec-decode w/ trained drafter at {drafter_path}")
 
 
 def default_served_name(family: str, variant: str) -> str:
