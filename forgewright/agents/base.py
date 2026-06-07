@@ -12,14 +12,16 @@ attributed to the right agent (the swarm stays invisible as a management surface
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Callable, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
 
-from forgewright.brain.provider import Brain
 from forgewright.contracts import Artifact
 from forgewright.ledger.ledger import Ledger
 from forgewright.permissions import PermissionPolicy
 from forgewright.registry import Registry
 from forgewright.tools.base import ToolRegistry
+
+if TYPE_CHECKING:  # the LLM stack (Brain -> config -> pydantic/litellm) is only needed for
+    from forgewright.brain.provider import Brain  # the agentic loop, not the deterministic run()
 
 Reporter = Callable[[str, dict], object]
 
@@ -48,7 +50,7 @@ class Specialist(ABC):
     def __init__(
         self,
         *,
-        brain: Optional[Brain] = None,
+        brain: "Optional[Brain]" = None,
         registry: Optional[Registry] = None,
         permissions: Optional[PermissionPolicy] = None,
         reporter: Optional[Reporter] = None,

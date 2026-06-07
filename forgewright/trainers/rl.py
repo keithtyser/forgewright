@@ -75,11 +75,12 @@ def grpo_scar_defaults() -> dict:
         "scale_rewards": "group",         # normalize advantages within a group
         "loss_type": "dapo",              # length-unbiased DAPO loss
         "mask_truncated_completions": True,  # don't learn from overlong/truncated rollouts
-        "num_generations": 4,
+        "num_generations": 8,             # more rollouts per prompt -> better advantage estimate
         "num_iterations": 1,
+        "gradient_accumulation_steps": 4,  # more prompts per optimizer step (smoother)
         "temperature": 1.0,
         "top_p": 1.0,
-        "learning_rate": 1e-6,            # RL LR is far lower than SFT
+        "learning_rate": 1e-5,            # below SFT (8e-5) but high enough for LoRA to actually move
         "max_completion_length": 256,
     }
 
@@ -124,7 +125,7 @@ h = plan["grpo"]
 args = GRPOConfig(
     output_dir=out_dir,
     per_device_train_batch_size=h["num_generations"],
-    gradient_accumulation_steps=1,
+    gradient_accumulation_steps=h.get("gradient_accumulation_steps", 1),
     max_steps=h["max_steps"],
     logging_steps=1, save_steps=h["max_steps"], save_total_limit=1,
     bf16=True, report_to="none", seed=3407,
@@ -216,6 +217,8 @@ def build_grpo_train_command(
         f"mkdir -p {hf_home} && docker run --rm --gpus {gpus} "
         f'--user "$(id -u):$(id -g)" -e HOME="$HOME" --shm-size=16g '
         f"-e HF_HOME={hf_home} -e HF_DATASETS_CACHE={hf_home}/datasets -e HF_HUB_DISABLE_XET=1 "
+        f"-e XDG_CACHE_HOME={hf_home}/cache -e TRITON_CACHE_DIR={hf_home}/triton "
+        f"-e TORCHINDUCTOR_CACHE_DIR={hf_home}/inductor "
         f"-v {repo}:{repo} -v {models_dir}:{models_dir} -v {hf_home}:{hf_home} -w {repo} "
         f"--entrypoint python3 {image} {run_dir}/train_grpo.py --plan {run_dir}/plan.json"
     )

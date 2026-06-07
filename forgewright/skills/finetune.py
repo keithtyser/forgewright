@@ -58,6 +58,8 @@ def build_container_train_command(
         f"mkdir -p {hf_home} && docker run --rm --gpus {gpus} "
         f'--user "$(id -u):$(id -g)" -e HOME="$HOME" --shm-size=16g '
         f"-e HF_HOME={hf_home} -e HF_DATASETS_CACHE={hf_home}/datasets -e HF_HUB_DISABLE_XET=1 "
+        f"-e XDG_CACHE_HOME={hf_home}/cache -e TRITON_CACHE_DIR={hf_home}/triton "
+        f"-e TORCHINDUCTOR_CACHE_DIR={hf_home}/inductor "
         f"-e MODEL_FORGE_MIN_FREE_DISK_FRACTION={min_disk_free} "
         f"-e MODEL_FORGE_MIN_AVAILABLE_RAM_FRACTION={min_ram_free} "
         f"-v {repo}:{repo} -v {models_dir}:{models_dir} -v {hf_home}:{hf_home} -w {repo} "
