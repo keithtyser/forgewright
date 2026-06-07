@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "forgewright"
 version = "0.0.1"
-description = "An agentic CLI harness for autonomous LLM post-training (fine-tune, abliterate, quantize, serving-opt) on local or SSH GPUs."
+description = "A multi-agent swarm for autonomous LLM post-training: one conversational CLI driving specialist agents (data curation, fine-tune, abliterate, quantize, serving-opt, eval, publish) over local or SSH GPUs."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
