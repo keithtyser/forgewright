@@ -347,23 +347,26 @@ def write_finetune_config(
 class ScaffoldFinetuneConfigTool(Tool):
     name = "scaffold_finetune_config"
     description = (
-        "Generate a model-forge fine-tune config + dataset manifest for an UPLIFT (distillation SFT) "
-        "run, with Forgewright's scar defaults baked in (assistant_only_loss/train_on_responses_only, "
-        "conservative LR, strict <think> + holdout-overlap hygiene, backend hf_causal_lm since the GB10 "
-        "has no Unsloth). Writes configs/finetuning/<name>.yaml and datasets/finetuning/<name>.yaml. "
-        "Point data_path at a teacher-distillation JSONL (messages format). Then drive it with the "
-        "`forge` tool (finetune --config <cfg> plan|prepare) and launch_job for the run."
+        "Scaffold a fine-tune run with Forgewright's scar defaults. Two modes: UPLIFT (distillation "
+        "SFT — assistant_only_loss/train_on_responses_only, conservative LR, strict <think> + holdout "
+        "hygiene; writes config+manifest+source-registry; data_path = messages JSONL) and TASK "
+        "(GRPO/RLVR — verifiable numeric-correctness + <think> reward, KL-anchor + PPO-clip + overlong "
+        "masking; writes runs/rl/<name>/{plan.json,train_grpo.py}; data_path = JSONL of {prompt,answer}). "
+        "Mode is chosen from `mode`, else inferred from `goal`. Returns the DETACHED container train "
+        "command (training runs in model-forge-posttrain-tf5; launch via launch_job)."
     )
     risk = "write"
     parameters = {
         "type": "object",
         "properties": {
             "family": {"type": "string", "description": "model family id, e.g. qwen35_0_8b"},
+            "goal": {"type": "string", "description": "the training goal (used to infer mode if mode unset)"},
+            "mode": {"type": "string", "description": "uplift | task (overrides goal inference)"},
             "source": {"type": "string", "description": "HF model id (default Qwen/Qwen3.5-0.8B)"},
-            "name": {"type": "string", "description": "run name (default <family>_uplift_v0)"},
-            "data_path": {"type": "string", "description": "distillation JSONL path (messages format)"},
-            "max_steps": {"type": "integer", "description": "training steps (default 60)"},
-            "learning_rate": {"type": "number", "description": "default 8e-5 (conservative)"},
+            "name": {"type": "string", "description": "run name (default <family>_uplift_v0 / _grpo_v0)"},
+            "data_path": {"type": "string", "description": "uplift: messages JSONL; task: {prompt,answer} JSONL"},
+            "max_steps": {"type": "integer", "description": "training steps"},
+            "learning_rate": {"type": "number", "description": "uplift default 8e-5 (conservative)"},
             "dry_run_only": {"type": "boolean"},
             "overwrite": {"type": "boolean"},
         },
@@ -378,6 +381,13 @@ class ScaffoldFinetuneConfigTool(Tool):
             return ToolResult(False, f"model-forge not found at {self.runner.repo}")
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         data_path = kwargs.pop("data_path", "datasets/finetuning/distill_smoke.jsonl")
+        goal = kwargs.pop("goal", "")
+        # explicit mode wins; otherwise infer from the goal text
+        mode = str(kwargs.pop("mode", "")).lower() or (select_mode(goal) if goal else "uplift")
+        if mode == "task":
+            return self._scaffold_task(family, source=kwargs.get("source"), data_path=data_path,
+                                       overwrite=overwrite, name=kwargs.get("name"),
+                                       max_steps=kwargs.get("max_steps"))
         try:
             cfg, man, reg = write_finetune_config(
                 self.runner.repo, family, overwrite=overwrite, data_path=data_path, **kwargs
@@ -394,4 +404,28 @@ class ScaffoldFinetuneConfigTool(Tool):
             f"  3) launch_job (DETACHED) with this container train command:\n     {train_cmd}",
             {"config": str(cfg), "manifest": str(man), "registry": str(reg),
              "mode": "uplift", "train_command": train_cmd},
+        )
+
+    def _scaffold_task(self, family: str, *, source: str | None, data_path: str,
+                       overwrite: bool, name: str | None, max_steps: int | None) -> ToolResult:
+        """TASK mode: scaffold a GRPO/RLVR run (Forgewright's own RL trainer)."""
+        from forgewright.trainers.rl import build_grpo_train_command, write_grpo_run
+
+        name = name or f"{family}_grpo_v0"
+        try:
+            plan, trainer = write_grpo_run(
+                self.runner.repo, name, source=source or "Qwen/Qwen3.5-0.8B",
+                data_path=data_path, overwrite=overwrite, max_steps=max_steps or 30,
+            )
+        except Exception as e:  # noqa: BLE001
+            return ToolResult(False, f"GRPO scaffold failed: {e}")
+        train_cmd = build_grpo_train_command(name)
+        return ToolResult(
+            True,
+            f"GRPO/RLVR plan: {plan}\ntrainer: {trainer}\n"
+            f"reward = verifiable numeric correctness + <think> format; scars: KL-anchor(beta) + "
+            f"PPO-clip(epsilon) + overlong-masking.\n"
+            f"data: a JSONL of {{\"prompt\":..., \"answer\":...}} at {data_path}.\n"
+            f"next: launch_job (DETACHED) with:\n     {train_cmd}",
+            {"plan": str(plan), "trainer": str(trainer), "mode": "task", "train_command": train_cmd},
         )
