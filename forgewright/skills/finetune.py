@@ -31,6 +31,40 @@ from forgewright.tools.forge import ForgeRunner
 
 Mode = Literal["uplift", "task"]
 
+# Training on the GB10 runs INSIDE this container: model-forge's host .venv is torch+cpu
+# (it does all GPU work in containers), and its generated run.sh uses systemd-run (needs
+# polkit auth, unavailable over non-interactive SSH). This image has GB10-native torch
+# (sm_121, cu130), transformers 5.x (qwen3_5 support), trl/peft/bitsandbytes.
+POSTTRAIN_IMAGE = "model-forge-posttrain-tf5:latest"
+
+
+def build_container_train_command(
+    name: str,
+    *,
+    repo: str = "$HOME/projects/model-forge",
+    models_dir: str = "$HOME/models",
+    hf_home: str = "$HOME/.forgewright/hf_home",
+    image: str = POSTTRAIN_IMAGE,
+    gpus: str = "all",
+    min_disk_free: float = 0.05,
+    min_ram_free: float = 0.03,
+) -> str:
+    """Build the `docker run` command that trains the prepared run INSIDE the posttrain
+    container (GPU + repo/models/HF mounts + a writable HF cache, bypassing the broken
+    host run.sh). Run `forge finetune --config <cfg> prepare --overwrite` first to
+    generate the trainer + plan.json, then launch this via launch_job (it detaches)."""
+    run_dir = f"runs/finetune/{name}"
+    return (
+        f"mkdir -p {hf_home} && docker run --rm --gpus {gpus} "
+        f'--user "$(id -u):$(id -g)" --shm-size=16g '
+        f"-e HF_HOME={hf_home} -e HF_DATASETS_CACHE={hf_home}/datasets -e HF_HUB_DISABLE_XET=1 "
+        f"-e MODEL_FORGE_MIN_FREE_DISK_FRACTION={min_disk_free} "
+        f"-e MODEL_FORGE_MIN_AVAILABLE_RAM_FRACTION={min_ram_free} "
+        f"-v {repo}:{repo} -v {models_dir}:{models_dir} -v {hf_home}:{hf_home} -w {repo} "
+        f"--entrypoint python3 {image} "
+        f"{run_dir}/train_trl_sft.py --plan {run_dir}/plan.json --prepare-data --train"
+    )
+
 # Goal phrasing that implies a *verifiable, measurable* target -> RL/RLVR (task mode).
 _TASK_SIGNALS = re.compile(
     r"\b(accuracy|pass@\d|pass rate|score|benchmark|solve|verifiab\w+|reward|"
@@ -103,6 +137,16 @@ trainer:
   seed: 3407
   report_to: none
 
+resource_policy:
+  cpu_quota: "80%"
+  memory_max: "85%"
+  reserve_cores: 1
+  min_memory_available_start: 0.03
+  min_memory_available_runtime: 0.03
+  min_disk_free: 0.05          # GB10 has a large shared disk; the 15% default is over-strict
+  monitor_interval_seconds: 30
+  checkpoint_on_memory_pressure: true
+
 lora:
   r: {lora_r}
   alpha: {lora_alpha}
@@ -120,7 +164,8 @@ baseline:
     - Eval-gate the adapter vs the base model; capability must not regress.
 """
 
-# Manifest: messages format with the <think>/holdout hygiene gates ON.
+# Manifest: messages format with the <think>/holdout hygiene gates ON. Sources are
+# resolved through a source registry (model-forge requires registry-defined ids).
 UPLIFT_MANIFEST_TEMPLATE = """\
 name: {name}
 description: "Forgewright uplift (distillation SFT) data for {family}."
@@ -128,6 +173,8 @@ format: messages
 chat_template: auto
 max_context_window: {max_seq_length}
 random_seed: 3407
+
+source_registry: configs/data_sources/{name}.yaml
 
 quality_gates:
   min_turn_chars: 2
@@ -139,8 +186,6 @@ quality_gates:
 
 sources:
   - id: {name}_distill
-    name: {name}_distill
-    path: {data_path}
     target_samples: {target_samples}
     role: teacher_distillation
 
@@ -150,17 +195,36 @@ holdouts:
   - evals/prompts/reasoning_style_stability.yaml
 """
 
+# Source registry: a reusable catalog the manifest picks from. Points at the local
+# teacher-distillation JSONL.
+UPLIFT_SOURCE_REGISTRY_TEMPLATE = """\
+version: 0.1.0
+description: "Forgewright uplift source catalog for {family} ({name})."
+sources:
+  {name}_distill:
+    name: {name}_distill
+    type: local_jsonl
+    path: {data_path}
+    license: CC-BY-4.0
+    quality_tier: teacher_distillation
+    roles: [capability_sft, teacher_distillation]
+    messages_field: messages
+"""
+
 FINETUNE_RUNBOOK = """\
 Fine-tune runbook (uplift / distillation SFT; DGX Spark / GB10):
  1. select_mode(goal): verifiable target metric -> task (RL); broad reasoning/style -> uplift (SFT).
  2. uplift: scaffold_finetune_config <family> --source <hf_model> --data-path <distill.jsonl>
       (writes configs/finetuning/<name>.yaml + datasets/finetuning/<name>.yaml with scar defaults:
        assistant_only_loss, conservative LR, <think> + holdout hygiene; backend hf_causal_lm — no Unsloth on GB10).
- 3. forge: finetune --config configs/finetuning/<name>.yaml plan        (dry sanity check of the plan).
- 4. forge: finetune --config configs/finetuning/<name>.yaml prepare     (builds + hygiene-filters the dataset).
- 5. launch_job: bash forge finetune --config configs/finetuning/<name>.yaml run   (DETACHED; poll to done).
- 6. Eval-gate: serve the merged/adaptered model -> forge eval <family> <variant> --internal, and compare the
-      capability_preservation_challenge pass rate vs the BASE model. Capability must not regress; report the delta.
+ 3. forge: finetune --config configs/finetuning/<name>.yaml plan             (dry sanity check of the plan).
+ 4. forge: finetune --config configs/finetuning/<name>.yaml prepare --overwrite   (generates train_trl_sft.py + plan.json).
+ 5. launch_job: build_container_train_command(<name>)  (DETACHED). Training runs INSIDE model-forge-posttrain-tf5
+      (the host .venv is torch+cpu and run.sh uses systemd-run which fails over SSH); the container has GB10 torch +
+      transformers 5.x + trl/peft/bnb. Poll to done; the LoRA adapter lands in the config's model.output_dir.
+ 6. Eval-gate: serve the adapter (model-forge serve honors VLLM_ENABLE_LORA + MODEL_FORGE_LORA_MODULES) ->
+      forge eval <family> <variant> --internal, and compare the capability_preservation_challenge pass rate vs the
+      BASE model. Capability must not regress; report the delta.
  7. Watch the loss/grad logs for repetition/format degeneration (the gravity collapse); if it degenerates,
       lower LR and re-run from the last good checkpoint.
 Teacher-distillation data: generate with model_forge.data.factory (teacher = a strong model), format each
@@ -227,10 +291,20 @@ def scaffold_uplift_manifest(
     return UPLIFT_MANIFEST_TEMPLATE.format(
         name=name,
         family=family,
-        data_path=data_path,
         target_samples=target_samples,
         max_seq_length=max_seq_length,
     )
+
+
+def scaffold_uplift_source_registry(
+    family: str,
+    *,
+    name: str | None = None,
+    data_path: str = "datasets/finetuning/distill_smoke.jsonl",
+) -> str:
+    """Render the source registry pointing at the teacher-distillation JSONL."""
+    name = name or f"{family}_uplift_v0"
+    return UPLIFT_SOURCE_REGISTRY_TEMPLATE.format(name=name, family=family, data_path=data_path)
 
 
 def write_finetune_config(
@@ -242,14 +316,16 @@ def write_finetune_config(
     data_path: str = "datasets/finetuning/distill_smoke.jsonl",
     target_samples: int = 64,
     **kwargs,
-) -> tuple[Path, Path]:
-    """Write config + dataset manifest into model-forge (idempotent). Returns both paths."""
+) -> tuple[Path, Path, Path]:
+    """Write config + dataset manifest + source registry into model-forge (idempotent).
+    Returns (config, manifest, registry) paths."""
     name = name or f"{family}_uplift_v0"
     max_seq_length = int(kwargs.get("max_seq_length", 4096))
     cfg = Path(repo) / "configs" / "finetuning" / f"{name}.yaml"
     man = Path(repo) / "datasets" / "finetuning" / f"{name}.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    man.parent.mkdir(parents=True, exist_ok=True)
+    reg = Path(repo) / "configs" / "data_sources" / f"{name}.yaml"
+    for p in (cfg, man, reg):
+        p.parent.mkdir(parents=True, exist_ok=True)
     if overwrite or not cfg.exists():
         cfg.write_text(scaffold_uplift_config(family, name=name, **kwargs), encoding="utf-8")
     if overwrite or not man.exists():
@@ -260,7 +336,12 @@ def write_finetune_config(
             ),
             encoding="utf-8",
         )
-    return cfg, man
+    if overwrite or not reg.exists():
+        reg.write_text(
+            scaffold_uplift_source_registry(family, name=name, data_path=data_path),
+            encoding="utf-8",
+        )
+    return cfg, man, reg
 
 
 class ScaffoldFinetuneConfigTool(Tool):
@@ -298,15 +379,19 @@ class ScaffoldFinetuneConfigTool(Tool):
         kwargs = {k: v for k, v in kwargs.items() if v is not None}
         data_path = kwargs.pop("data_path", "datasets/finetuning/distill_smoke.jsonl")
         try:
-            cfg, man = write_finetune_config(
+            cfg, man, reg = write_finetune_config(
                 self.runner.repo, family, overwrite=overwrite, data_path=data_path, **kwargs
             )
         except Exception as e:  # noqa: BLE001
             return ToolResult(False, f"scaffold failed: {e}")
-        mode = select_mode(kwargs.get("name", "") or family)
+        name = cfg.stem
+        train_cmd = build_container_train_command(name)
         return ToolResult(
             True,
-            f"uplift finetune config: {cfg}\ndataset manifest: {man}\n"
-            f"next: forge finetune --config configs/finetuning/{cfg.stem}.yaml plan",
-            {"config": str(cfg), "manifest": str(man), "mode": mode},
+            f"uplift finetune config: {cfg}\ndataset manifest: {man}\nsource registry: {reg}\n"
+            f"next:\n  1) forge finetune --config configs/finetuning/{name}.yaml plan\n"
+            f"  2) forge finetune --config configs/finetuning/{name}.yaml prepare --overwrite\n"
+            f"  3) launch_job (DETACHED) with this container train command:\n     {train_cmd}",
+            {"config": str(cfg), "manifest": str(man), "registry": str(reg),
+             "mode": "uplift", "train_command": train_cmd},
         )

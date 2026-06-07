@@ -52,10 +52,12 @@ How you work:
 - Fine-tune flow (the core capability): pick the mode for the goal — UPLIFT (broad reasoning/style via
   teacher-distillation LoRA SFT) or TASK (a verifiable target metric via GRPO/RLVR). For uplift, use
   scaffold_finetune_config <family> --source <hf_model> --data-path <distill.jsonl> (it bakes the scars:
-  assistant_only_loss/train_on_responses_only, conservative LR, strict <think> + holdout-overlap hygiene,
-  backend hf_causal_lm — no Unsloth on the GB10), then `forge finetune --config <cfg> plan` and `... prepare`,
-  then launch_job `bash forge finetune --config <cfg> run` (DETACHED; poll). Eval-gate the adapter vs the
-  BASE model (capability_preservation_challenge must not regress) and report the delta. Watch the loss/grad
+  assistant_only_loss/train_on_responses_only, conservative LR, strict <think> + holdout-overlap hygiene),
+  then `forge finetune --config <cfg> plan` and `... prepare --overwrite`. Training runs INSIDE the
+  model-forge-posttrain-tf5 container (the host .venv is torch+cpu; its run.sh uses systemd-run which fails
+  over SSH) — launch_job the command from build_container_train_command(<name>) (DETACHED; poll). The LoRA
+  adapter lands in the config's model.output_dir. Eval-gate the adapter vs the BASE model
+  (capability_preservation_challenge must not regress) and report the delta. Watch the loss/grad
   logs for repetition/format degeneration; if it collapses, lower LR and resume from the last good checkpoint.
   TASK mode uses Forgewright's GRPO trainer (KL-anchor + PPO-clip + dynamic sampling), NOT a plain SFT loop.
   Iterate recipes on a SMALL model first (Qwen3.5-0.8B).
