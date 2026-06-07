@@ -48,6 +48,10 @@ The Director runs named **recipes** (chains over the roster, e.g. `uplift`, `tas
 halts and runs **saga compensations** in reverse, so a regression never flows downstream
 and side effects (like a live served endpoint) get torn down.
 
+From the chat, the conversational agent dispatches the swarm through the `run_recipe` tool:
+you state a goal, the agent picks the recipe + params and hands it to the Director, and the
+specialist progress plus any approval surface in the one transcript.
+
 ## Capabilities (proven on a DGX Spark GB10, sm_121)
 
 - **Quantize**: NVFP4 (NVIDIA ModelOpt) with a speedup-based gate (no static floor).
