@@ -72,3 +72,23 @@ def test_serve_stdio_streams_turn_and_approval():
     objs = [json.loads(l) for l in outstream.getvalue().splitlines() if l.strip()]
     pub = [o for o in objs if o.get("type") == "tool" and o.get("tool") == "forge_publish"][0]
     assert pub["ok"] is True
+
+
+def test_serve_stdio_records_full_transcript(tmp_path):
+    """The session transcript captures meta + every inbound message + every outbound event."""
+    instream = io.StringIO(json.dumps({"type": "user_msg", "text": "hi"}) + "\n")
+    outstream = io.StringIO()
+
+    def handle(text, reporter, permissions):
+        reporter("assistant", {"role": "agent", "content": "hello"})
+
+    rp = tmp_path / "transcripts" / "sess-1.jsonl"
+    serve_stdio(handle, instream=instream, outstream=outstream, record_path=rp,
+                session_meta={"run_id": "sess-1", "brain": "test"})
+    rows = [json.loads(l) for l in rp.read_text(encoding="utf-8").splitlines() if l.strip()]
+    dirs = [r["dir"] for r in rows]
+    assert dirs[0] == "meta" and rows[0]["event"]["run_id"] == "sess-1"
+    assert any(r["dir"] == "in" and r["event"]["type"] == "user_msg" for r in rows)
+    assert any(r["dir"] == "out" and r["event"].get("type") == "assistant" for r in rows)
+    assert any(r["dir"] == "out" and r["event"].get("type") == "done" for r in rows)
+    assert all("t" in r for r in rows)   # every row timestamped

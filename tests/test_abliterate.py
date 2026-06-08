@@ -62,6 +62,67 @@ def test_write_abliterate_config_idempotent(tmp_path: Path):
     assert "# touched" not in cfg.read_text()
 
 
+class _FakeJobs:
+    """Stand-in JobManager: launch/wait return a scripted exit code, no real process."""
+
+    def __init__(self, exit_code=0):
+        self._exit = exit_code
+
+    def launch(self, cmd, host=None, cwd=None, name=None):
+        return {"id": "job-test"}
+
+    def wait(self, jid, **kw):
+        return {"exit_code": self._exit}
+
+
+def _abliterator(tmp_path, exit_code, fresh, monkeypatch):
+    from forgewright.agents.abliterator import Abliterator
+    from forgewright.registry import Registry
+    from forgewright.tools.forge import ForgeRunner
+
+    monkeypatch.setattr(Abliterator, "_wrote_fresh_weights", lambda self, out, since: fresh)
+    return Abliterator(registry=Registry(tmp_path / "reg.jsonl"),
+                       runner=ForgeRunner(repo=tmp_path), jobs=_FakeJobs(exit_code))
+
+
+def test_abliterator_uses_unique_output_name_not_v0(tmp_path, monkeypatch):
+    from forgewright.contracts import ModelArtifact
+
+    abl = _abliterator(tmp_path, exit_code=0, fresh=True, monkeypatch=monkeypatch)
+    src = ModelArtifact(uri="/home/u/models/Qwen3.5-0.8B", meta={"family": "qwen35_0_8b", "role": "base"})
+    art = abl.run([src])
+    # never the colliding _v0 dir; a unique, timestamped name instead
+    assert "abliterated_v0" not in art.uri and "_abliterated_" in art.uri
+
+
+def test_abliterator_fails_when_no_fresh_weights(tmp_path, monkeypatch):
+    """exit 0 but nothing freshly written -> refuse to claim a stale/pre-existing model."""
+    from forgewright.contracts import ModelArtifact
+
+    abl = _abliterator(tmp_path, exit_code=0, fresh=False, monkeypatch=monkeypatch)
+    src = ModelArtifact(uri="/home/u/models/Qwen3.5-0.8B", meta={"family": "qwen35_0_8b"})
+    art = abl.run([src])
+    assert art.gate.passed is False
+    assert "stale/pre-existing" in art.gate.verdict
+    assert art.gate.metrics["fresh_weights"] is False
+
+
+def test_abliterator_passes_only_with_fresh_weights(tmp_path, monkeypatch):
+    from forgewright.contracts import ModelArtifact
+
+    abl = _abliterator(tmp_path, exit_code=0, fresh=True, monkeypatch=monkeypatch)
+    art = abl.run([ModelArtifact(uri="/home/u/models/Qwen3.5-0.8B", meta={"family": "qwen35_0_8b"})])
+    assert art.gate.passed is True and art.gate.verdict == "ABLITERATED"
+
+
+def test_abliterator_fails_on_nonzero_exit(tmp_path, monkeypatch):
+    from forgewright.contracts import ModelArtifact
+
+    abl = _abliterator(tmp_path, exit_code=1, fresh=True, monkeypatch=monkeypatch)
+    art = abl.run([ModelArtifact(uri="/home/u/models/Qwen3.5-0.8B", meta={"family": "qwen35_0_8b"})])
+    assert art.gate.passed is False and "did not exit cleanly" in art.gate.verdict
+
+
 def test_read_abliterate_metrics(tmp_path: Path):
     p = tmp_path / "scores.csv"
     p.write_text(

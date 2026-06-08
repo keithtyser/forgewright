@@ -287,9 +287,9 @@ function interactive(brain) {
   // --- the Swarm HUD: a live, multi-line panel that hovers above the prompt while the swarm
   //     works and clears for your turn. It shows the pipeline (each specialist's stage state),
   //     the active specialist, training step/loss with a sparkline, elapsed, and tokens.
-  //     It redraws in place (cursor-up + erase-below), the same flicker-free trick the old
-  //     one-line spinner used, just extended to N lines. Every line is width-budgeted so it
-  //     never wraps (wrapping would break the erase math).
+  //     It animates by overwriting each line in place (clear-line, never erase-below), so it
+  //     does not flicker. Every line is width-budgeted so it never wraps (a wrap would throw
+  //     off the fixed-line in-place redraw).
   const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
@@ -390,29 +390,48 @@ function interactive(brain) {
   }
   const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
 
-  function hudDraw() {
+  // The HUD updates IN PLACE to avoid flicker: the per-frame animation overwrites each line
+  // with `\x1b[2K` (clear-line) at its fixed position. It never uses `\x1b[J` (erase-below),
+  // which blanks the whole block each frame and is what caused the flicker. Invariant: after
+  // any draw, the cursor sits at the END of the last HUD line (no trailing newline).
+  function curLines() {
+    if (!PLAIN) return hudLines();
+    return ['', A.dim + GLYPHS[hud.i % GLYPHS.length] + ' working… (' +
+      Math.round((Date.now() - hud.start) / 1000) + 's' +
+      (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r];
+  }
+  function hudDraw() {                       // fresh draw at the current cursor position
     if (!busy || awaitingApproval) return;
-    const lines = PLAIN
-      ? ['', A.dim + GLYPHS[hud.i % GLYPHS.length] + ' working… (' +
-         Math.round((Date.now() - hud.start) / 1000) + 's' +
-         (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r]
-      : hudLines();
-    w(lines.join('\n') + '\n');
+    const lines = curLines();
+    w(lines.join('\n'));                     // no trailing newline -> cursor at end of last line
     hud.prevLines = lines.length;
   }
-  function hudClear() {
-    if (hud.prevLines > 0) { w('\x1b[' + hud.prevLines + 'A\x1b[J'); hud.prevLines = 0; }
+  function hudRedraw() {                     // in-place overwrite (the animation path; no flicker)
+    if (!busy || awaitingApproval) return;
+    if (hud.prevLines === 0) return hudDraw();
+    const lines = curLines();
+    if (lines.length !== hud.prevLines) { hudClear(); return hudDraw(); }  // structure changed
+    let s = '\r' + (hud.prevLines > 1 ? '\x1b[' + (hud.prevLines - 1) + 'A' : '');  // to block top
+    for (let i = 0; i < lines.length; i++) s += '\x1b[2K' + lines[i] + (i < lines.length - 1 ? '\n\r' : '');
+    w(s);                                    // cursor back at end of last line
+    hud.prevLines = lines.length;
   }
-  function hudPaint() { hudClear(); hudDraw(); }
+  function hudClear() {                      // erase the block; leave cursor at its top (col 0)
+    if (hud.prevLines <= 0) return;
+    let s = '\r\x1b[2K';
+    for (let i = 1; i < hud.prevLines; i++) s += '\x1b[1A\x1b[2K';
+    w(s);
+    hud.prevLines = 0;
+  }
   function hudResetTurn() {
     hud.start = Date.now(); hud.i = 0; hud.tokens = 0;
-    hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = '';
+    hud.pipeline = null; hud.metric = null; hud.budget = null; hud.activeRole = null; hud.lastAction = '';
   }
   function startStatus() {
     if (!hud.start) hud.start = Date.now();
     if (hud.timer) return;
-    hud.timer = setInterval(() => { hud.i++; hudPaint(); }, 120);
     hudDraw();
+    hud.timer = setInterval(() => { hud.i++; hudRedraw(); }, 140);
   }
   function stopStatus() {
     if (hud.timer) { clearInterval(hud.timer); hud.timer = null; }

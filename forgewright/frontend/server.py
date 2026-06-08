@@ -77,12 +77,50 @@ def route(msg: dict, msg_q: "queue.Queue", approval_q: "queue.Queue") -> None:
         msg_q.put(None if t == "shutdown" else msg)
 
 
+def _make_recorder(record_path):
+    """Append a complete, replayable session transcript: every event we emit to the UI AND
+    every message we receive from it, each tagged with a wall-clock time and a direction. This
+    is the full trace (review + future training data); the agent ledger is the loop-only view.
+    Best-effort: a recording failure never disturbs the session. Returns (record, close)."""
+    if not record_path:
+        return (lambda direction, obj: None), (lambda: None)
+    import os
+    import time
+
+    try:
+        os.makedirs(os.path.dirname(str(record_path)), exist_ok=True)
+        fh = open(str(record_path), "a", encoding="utf-8")  # noqa: SIM115 - closed by caller
+    except OSError:
+        return (lambda direction, obj: None), (lambda: None)
+
+    def record(direction: str, obj) -> None:
+        try:
+            fh.write(json.dumps({"t": time.time(), "dir": direction, "event": obj}, default=str) + "\n")
+            fh.flush()
+        except Exception:  # noqa: BLE001 - recording is best-effort
+            pass
+
+    def close() -> None:
+        try:
+            fh.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return record, close
+
+
 def serve_stdio(
-    handle_turn: HandleTurn, *, instream, outstream, handle_command: Optional[HandleCommand] = None
+    handle_turn: HandleTurn, *, instream, outstream, handle_command: Optional[HandleCommand] = None,
+    record_path=None, session_meta: Optional[dict] = None,
 ) -> None:
     """Blocking serve loop over two text streams (stdin/stdout in production). A reader
     thread routes incoming lines; the main loop runs turns with a stream-backed approver,
-    and dispatches instant `command` messages to ``handle_command``."""
+    and dispatches instant `command` messages to ``handle_command``. If ``record_path`` is
+    given, the entire bidirectional event stream is recorded there as a session transcript."""
+    record, close_record = _make_recorder(record_path)
+    if session_meta:
+        record("meta", session_meta)
+
     def _write(s: str) -> None:
         outstream.write(s)
         try:
@@ -90,7 +128,12 @@ def serve_stdio(
         except Exception:  # noqa: BLE001
             pass
 
-    emit = json_line_emitter(_write)
+    raw_emit = json_line_emitter(_write)
+
+    def emit(obj: dict) -> None:
+        record("out", obj)
+        raw_emit(obj)
+
     server = BackendServer(handle_turn, emit, handle_command=handle_command)
     msg_q: "queue.Queue" = queue.Queue()
     approval_q: "queue.Queue" = queue.Queue()
@@ -104,6 +147,7 @@ def serve_stdio(
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            record("in", msg)
             route(msg, msg_q, approval_q)
         msg_q.put(None)  # stream closed -> end the session
 
@@ -119,3 +163,4 @@ def serve_stdio(
         approver = StreamApprover(emit, approval_q.get)
         server.run_turn(str(msg.get("text", "")), ask_fn=approver)
     emit({"type": "bye"})
+    close_record()

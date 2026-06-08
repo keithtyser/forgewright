@@ -160,6 +160,20 @@ artifacts stream into the transcript as lineage badges (`◇ eval#def456 ← ada
 score 0.94 ✓`), and `/graph` draws the full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1`
 for a minimal one-line status instead. See `docs/` and the plan file for the slice breakdown.
 
+## Traces
+
+Every session is recorded two ways under `$FORGEWRIGHT_HOME` (default `~/.forgewright`):
+
+- `ledger/<run_id>.jsonl` — the agent-loop view (goal, each assistant turn + tool calls/
+  results, token usage), written by the loop.
+- `transcripts/<run_id>.jsonl` — the complete, replayable session: a `meta` header (run id,
+  brain, ledger path), then every inbound message (your turns, approval decisions, slash
+  commands) and every outbound event (assistant text, tool calls, pipeline/stage/artifact/
+  metric, approvals), each tagged with a wall-clock time and direction (`in`/`out`).
+
+The transcript is a full agentic trajectory (goal to outcome), so it doubles as review
+material for improving the harness and as a source for distillation/RL training data later.
+
 ## Credits
 
 - [terminal-kit](https://www.terminal-kit.com/) by Cedric Ronvel (MIT), the terminal UI

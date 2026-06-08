@@ -291,7 +291,16 @@ def serve(
         else:
             reporter("assistant", {"role": "agent", "content": f"unknown command: {name}"})
 
-    serve_stdio(handle_turn, instream=sys.stdin, outstream=sys.stdout, handle_command=handle_command)
+    # record the full bidirectional session transcript (review + future training data)
+    transcript = settings.home / "transcripts" / f"{run_id}.jsonl"
+    session_meta = {
+        "run_id": run_id, "brain": provider.litellm_model(), "kind": provider.kind,
+        "started_at": time.time(), "ledger": str(ledger.path),
+    }
+    serve_stdio(
+        handle_turn, instream=sys.stdin, outstream=sys.stdout, handle_command=handle_command,
+        record_path=transcript, session_meta=session_meta,
+    )
 
 
 def _graph_event(registry, limit: int = 40) -> dict:

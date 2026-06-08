@@ -7,6 +7,8 @@ dual gate (refusal must DROP and capability HOLD) is enforced downstream by the 
 """
 from __future__ import annotations
 
+import subprocess
+import time
 from typing import Optional, Sequence
 
 from forgewright.agents.base import Specialist
@@ -21,6 +23,12 @@ You are the Abliterator specialist: remove refusal behavior via contrastive refu
 projection while preserving capability. Project mid layers only; leave embeddings/lm_head/MoE
 experts untouched; keep strength conservative (over-abliteration breaks benign answers). You
 never publish; hand the abliterated model on for eval (refusal must drop AND capability hold).
+
+Produce a GENUINELY FRESH result. Collect refusal directions from THIS run and write new
+weights to a fresh output dir. NEVER reuse a prior run's collected directions, and NEVER pass
+off a pre-existing abliterated model as your output. If activation collection cannot run here
+(e.g. transformers cannot load the model architecture), STOP and report the blocker: a truthful
+failure is correct; a fabricated success is a serious error.
 """
 
 _IMG_RUN = "bash scripts/run_in_container.sh python3 -m model_forge.pipelines.abliterate"
@@ -55,29 +63,62 @@ class Abliterator(Specialist):
         model = inputs[0]
         family = model.meta.get("family") or "model"
         source = model.uri
-        name = f"{family}_abliterated_v0"
+        # A UNIQUE, timestamped output name so we can never collide with (or silently inherit)
+        # a pre-existing abliterated model directory. If this run does not write weights here,
+        # the dir simply will not exist -> the gate fails honestly.
+        name = f"{family}_abliterated_{time.strftime('%Y%m%d-%H%M%S')}"
         self._emit("assistant", content=f"abliterate {model.id} (family {family}, strength {strength})")
-        cfg = write_abliterate_config(
+        write_abliterate_config(
             self.forge.repo, family, name=name, source=source, local_dir=source,
             strength=strength, layer_skip_first=layer_skip_first, layer_skip_last=layer_skip_last,
             layer_start=layer_start, layer_end=layer_end, overwrite=True,
         )
         rel = f"configs/abliteration/{name}.yaml"
+        stem = source.rstrip("/").split("/")[-1]
+        out = f"~/models/{stem}-{name}"
         # collect refusal directions, then project + export the standalone model
         cmd = f"{_IMG_RUN} --config {rel} collect --execute && {_IMG_RUN} --config {rel} export --execute"
+        since = time.time()
         rec = self.jobs.launch(cmd, host=self.host, cwd=str(self.forge.repo), name=f"ablate-{family}")
         self._emit("tool", tool="launch_job", ok=True, output=f"job {rec['id']} abliterating {family}")
         final = self.jobs.wait(rec["id"])
-        ok = bool(final and final.get("exit_code") == 0)
-        stem = source.rstrip("/").split("/")[-1]
-        out = f"~/models/{stem}-{name}"
+        exit_ok = bool(final and final.get("exit_code") == 0)
+        # Provenance honesty: only claim success if THIS run actually wrote fresh weights into
+        # the (uniquely-named) output dir. Catches no-ops, partial failures, and any attempt to
+        # reuse stale/pre-existing weights.
+        fresh = self._wrote_fresh_weights(out, since) if exit_ok else False
+        ok = exit_ok and fresh
+        verdict = (
+            "ABLITERATED" if ok
+            else "FAIL: abliteration did not exit cleanly" if not exit_ok
+            else "FAIL: no freshly-written weights in the output dir (refusing to claim a stale/pre-existing model)"
+        )
         art = ModelArtifact(
             uri=out, produced_by=self.role, parents=[model.id],
             config_hash="", run_id=(self.ledger.run_id if self.ledger else ""),
-            gate=Gate(passed=ok, metrics={"exit_code": (final or {}).get("exit_code"), "strength": strength},
-                      verdict="ABLITERATED" if ok else "FAIL: abliteration did not exit cleanly"),
+            gate=Gate(passed=ok, metrics={"exit_code": (final or {}).get("exit_code"),
+                                          "strength": strength, "fresh_weights": fresh},
+                      verdict=verdict),
             meta={"role": "abliterated", "family": family, "base": source},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok, output=f"abliterated ModelArtifact {art.id}")
         return art
+
+    def _host_run(self, cmd: str, timeout: int = 60) -> str:
+        """Run a quick shell command on this specialist's host (ssh) or locally; return stdout."""
+        argv = ["ssh", self.host, cmd] if self.host else ["bash", "-lc", cmd]
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            return (r.stdout or "").strip()
+        except Exception:  # noqa: BLE001 - verification is best-effort; treat as "not verified"
+            return ""
+
+    def _wrote_fresh_weights(self, out_dir: str, since: float) -> bool:
+        """True iff the output dir contains model weights modified at/after `since` (i.e. written
+        by THIS run). `~` is expanded by the shell (local bash -lc or the remote ssh shell)."""
+        cmd = (
+            f'find {out_dir} -type f \\( -name "*.safetensors" -o -name "*.bin" \\) '
+            f"-newermt @{int(since)} 2>/dev/null | head -1"
+        )
+        return bool(self._host_run(cmd))
