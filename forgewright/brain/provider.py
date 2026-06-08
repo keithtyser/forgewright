@@ -41,7 +41,9 @@ class Brain:
         provider: ProviderConfig,
         *,
         temperature: float = 0.2,
-        max_tokens: int = 4096,
+        # generous: reasoning models (e.g. deepseek-v4-pro) spend hidden reasoning tokens from
+        # this budget, so a low cap truncates the visible answer mid-sentence.
+        max_tokens: int = 16384,
         max_retries: int = 3,
         timeout: int = 600,
     ) -> None:
