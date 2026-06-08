@@ -33,7 +33,7 @@ _KIND_DEFAULT_KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
 }
 
-BrainKind = Literal["vllm", "openai", "anthropic", "openrouter", "oauth-claude", "oauth-codex"]
+BrainKind = Literal["vllm", "openai", "anthropic", "openrouter", "oauth-codex"]
 
 
 class ProviderConfig(BaseModel):
@@ -162,13 +162,31 @@ def parse_brain_arg(arg: str) -> ProviderConfig:
         if raw.startswith("vllm/"):
             raw = "vllm:" + raw[len("vllm/") :]
     if ":" not in raw:
+        if raw == "oauth-codex":
+            from forgewright.brain.codex_oauth import DEFAULT_MODEL as _CODEX_DEFAULT
+
+            return ProviderConfig(name="oauth-codex", kind="oauth-codex", model=_CODEX_DEFAULT)
         return ProviderConfig(name=raw, kind="openai", model=raw)
 
     kind, rest = raw.split(":", 1)
+    if kind == "oauth-codex":
+        # ChatGPT-login tap for OpenAI's open-source Codex (sanctioned for that CLI). Reuses
+        # credentials from `codex login` at ~/.codex/auth.json. Model defaults to gpt-5-codex.
+        from forgewright.brain.codex_oauth import DEFAULT_MODEL as _CODEX_DEFAULT
+
+        model = rest.strip() or _CODEX_DEFAULT
+        return ProviderConfig(name="oauth-codex", kind="oauth-codex", model=model)
+    if kind == "oauth-claude":
+        raise ValueError(
+            "Claude subscription OAuth tap is not supported: replaying Claude Code subscription "
+            "tokens circumvents Anthropic's terms of service. Use an official API key instead "
+            "(--brain anthropic:claude-opus-4-8), a local model (--brain vllm:<model>@<url>), "
+            "or --brain openrouter:<model>."
+        )
     api_base: Optional[str] = None
     if "@" in rest:
         rest, api_base = rest.rsplit("@", 1)
-    known = set(_KIND_PREFIX) | {"oauth-claude", "oauth-codex"}
+    known = set(_KIND_PREFIX)
     if kind not in known:
         # Not a recognized kind -> assume the whole thing was a passthrough model id.
         return ProviderConfig(name=arg, kind="openai", model=arg)

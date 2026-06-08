@@ -52,6 +52,13 @@ class Brain:
         self.max_tokens = max_tokens
         self.max_retries = max_retries
         self.timeout = timeout
+        # oauth-codex talks to OpenAI's Codex Responses API (ChatGPT login), not LiteLLM, so
+        # it delegates to a dedicated client behind the same AssistantTurn contract.
+        self._codex = None
+        if provider.kind == "oauth-codex":
+            from forgewright.brain.codex_oauth import CodexClient
+
+            self._codex = CodexClient(model=provider.model, timeout=timeout)
 
     def _kwargs(
         self,
@@ -82,6 +89,19 @@ class Brain:
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: str = "auto",
     ) -> AssistantTurn:
+        if self._codex is not None:
+            last_err: Optional[Exception] = None
+            for attempt in range(self.max_retries):
+                try:
+                    return self._codex.chat(messages, tools, tool_choice)
+                except Exception as e:  # noqa: BLE001 - retried, then surfaced
+                    last_err = e
+                    time.sleep(min(2**attempt, 10))
+            raise BrainError(
+                f"Codex completion failed after {self.max_retries} attempts "
+                f"(model={self.provider.model!r}): {last_err}"
+            )
+
         import litellm  # lazy import keeps `import forgewright` fast
 
         last_err: Optional[Exception] = None
