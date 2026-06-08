@@ -51,6 +51,29 @@ def test_scaffold_bakes_capability_preserving_defaults():
     assert "require_execute_flag: true" in cfg
 
 
+def test_scaffold_omits_layer_window_by_default():
+    # layer_start/end omitted -> model-forge derives the edit window from collected directions,
+    # so the collected and edited layer ranges can't silently disagree.
+    cfg = scaffold_abliterate_config("qwen35_0_8b", source="Qwen/Qwen3.5-0.8B")
+    assert "layer_start:" not in cfg and "layer_end:" not in cfg
+    assert "layer_skip_first: 4" in cfg and "target_weight_suffixes:" in cfg
+
+
+def test_scaffold_includes_layer_window_when_set():
+    cfg = scaffold_abliterate_config("qwen35_0_8b", source="Qwen/Qwen3.5-0.8B", layer_start=4, layer_end=21)
+    assert "layer_start: 4" in cfg and "layer_end: 21" in cfg
+
+
+def test_scaffold_config_is_valid_yaml():
+    import yaml
+
+    cfg = scaffold_abliterate_config("qwen35_0_8b", source="Qwen/Qwen3.5-0.8B")
+    doc = yaml.safe_load(cfg)
+    assert doc["edit"]["mode"] == "projection"
+    assert "layer_start" not in doc["edit"] and "layer_end" not in doc["edit"]
+    assert doc["activation_collection"]["layer_skip_first"] == 4
+
+
 def test_write_abliterate_config_idempotent(tmp_path: Path):
     cfg = write_abliterate_config(tmp_path, "qwen35_0_8b", source="Qwen/Qwen3.5-0.8B")
     assert cfg == tmp_path / "configs" / "abliteration" / "qwen35_0_8b_abliterated_v0.yaml"

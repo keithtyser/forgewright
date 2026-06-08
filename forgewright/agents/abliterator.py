@@ -58,8 +58,8 @@ class Abliterator(Specialist):
         ])
 
     def run(self, inputs: Sequence[Artifact], goal: str = "", *, strength: float = 3.0,
-            layer_skip_first: int = 4, layer_skip_last: int = 2, layer_start: int = 4,
-            layer_end: int = 24) -> Artifact:
+            layer_skip_first: int = 4, layer_skip_last: int = 2,
+            layer_start: Optional[int] = None, layer_end: Optional[int] = None) -> Artifact:
         self.validate_inputs(inputs)
         model = inputs[0]
         family = model.meta.get("family") or "model"

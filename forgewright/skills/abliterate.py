@@ -69,9 +69,7 @@ edit:
   module_strengths:
     self_attn.o_proj.weight: 1.25
     mlp.down_proj.weight: 0.75
-  layer_start: {layer_start}
-  layer_end: {layer_end}
-  target_weight_suffixes:
+{layer_window}  target_weight_suffixes:
     - mlp.down_proj.weight
     - self_attn.o_proj.weight
   leave_embeddings_untouched: true
@@ -125,15 +123,25 @@ def scaffold_abliterate_config(
     max_pairs: int = 24,
     layer_skip_first: int = 4,
     layer_skip_last: int = 2,
-    layer_start: int = 4,
-    layer_end: int = 24,
+    layer_start: Optional[int] = None,
+    layer_end: Optional[int] = None,
     strength: float = 3.0,
     min_free_cuda_gb: int = 8,
     trust_remote_code: bool = True,
 ) -> str:
-    """Render a model-forge abliteration config for ``family`` (projection method)."""
+    """Render a model-forge abliteration config for ``family`` (projection method).
+
+    layer_start/layer_end are omitted by default so model-forge derives the edit window from
+    the layers collection actually produces directions for (driven by layer_skip_first/last);
+    this keeps the collected and edited windows consistent. Set them only to override."""
     name = name or f"{family}_abliterated_v0"
     stem = source.rstrip("/").split("/")[-1]
+    parts = []
+    if layer_start is not None:
+        parts.append(f"  layer_start: {layer_start}")
+    if layer_end is not None:
+        parts.append(f"  layer_end: {layer_end}")
+    layer_window = ("\n".join(parts) + "\n") if parts else ""
     return ABLITERATE_CONFIG_TEMPLATE.format(
         name=name,
         source=source,
@@ -144,8 +152,7 @@ def scaffold_abliterate_config(
         max_pairs=max_pairs,
         layer_skip_first=layer_skip_first,
         layer_skip_last=layer_skip_last,
-        layer_start=layer_start,
-        layer_end=layer_end,
+        layer_window=layer_window,
         strength=strength,
         min_free_cuda_gb=min_free_cuda_gb,
         trust_remote_code=str(trust_remote_code).lower(),
