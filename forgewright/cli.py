@@ -78,7 +78,7 @@ def _bind_swarm(agent, reporter, permissions) -> None:
         tool.bind(reporter=reporter, permissions=permissions)
 
 
-def build_registry() -> ToolRegistry:
+def build_registry(brain=None) -> ToolRegistry:
     jm = JobManager()  # one shared job manager across the job tools
     forge = ForgeRunner()  # model-forge ./forge CLI driver (shared by the forge tools)
     return ToolRegistry(
@@ -103,7 +103,7 @@ def build_registry() -> ToolRegistry:
             ScaffoldFinetuneConfigTool(forge),
             ScaffoldAbliterateConfigTool(forge),
             ServingOptTool(forge, jm),
-            RunRecipeTool(registry=Registry(), jobs=jm, forge=forge),
+            RunRecipeTool(registry=Registry(), jobs=jm, forge=forge, brain=brain),
         ]
     )
 
@@ -140,7 +140,7 @@ def run(
 
     agent = Agent(
         brain=Brain(provider),
-        tools=build_registry(),
+        tools=build_registry(Brain(provider)),
         permissions=policy,
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
@@ -205,7 +205,7 @@ def interactive(
     ledger = Ledger(run_id, settings.ledger_dir)
     agent = Agent(
         brain=Brain(provider),
-        tools=build_registry(),
+        tools=build_registry(Brain(provider)),
         permissions=policy,
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
@@ -269,7 +269,7 @@ def serve(
     interrupt_ev = threading.Event()   # set by an `interrupt` message; checked between agent steps
     agent = Agent(
         brain=Brain(provider),
-        tools=build_registry(),
+        tools=build_registry(Brain(provider)),
         permissions=PermissionPolicy(),
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),

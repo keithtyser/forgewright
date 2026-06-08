@@ -123,7 +123,10 @@ class Director:
                 return DirectorResult(False, produced, failed_at=role, reason=art.gate.verdict)
             self._emit("stage", name=role, index=i, total=total, state="done")
             completed.append((step, art))
-            current = [art]
+            # A gate (Evaluator -> eval report) passes the evaluated artifact through, so a later
+            # stage (e.g. Publisher) receives the model/adapter that passed, not the report itself.
+            if art.kind != "eval":
+                current = [art]
 
         final = produced[-1] if produced else None
         self._emit("assistant", content=f"recipe complete: {len(produced)} artifacts, "

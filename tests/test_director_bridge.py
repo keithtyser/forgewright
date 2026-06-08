@@ -91,6 +91,29 @@ def test_director_emits_structured_pipeline_events(tmp_path):
     assert arts[1]["kind"] == "eval" and arts[1]["parents"]
 
 
+def test_director_gate_passes_evaluated_artifact_through(tmp_path):
+    """After an Evaluator (a gate), the next stage should receive the evaluated adapter/model,
+    not the eval report -- so e.g. Publisher can act on what passed."""
+    seen = {}
+
+    class _Recorder(Specialist):
+        role = "Publisher"; accepts = ("adapter", "model"); produces = "published"
+        def system_prompt(self): return ""
+        def tools(self): return ToolRegistry([])
+        def run(self, inputs, goal="", **kw):
+            seen["got_kind"] = inputs[0].kind
+            art = Artifact(kind="published", parents=[inputs[0].id])
+            self.registry.register(art)
+            return art
+
+    reg = Registry(tmp_path / "artifacts.jsonl")
+    ds = reg.register(DatasetArtifact(uri="d.jsonl"))
+    res = Director(registry=reg).run_recipe(
+        "x", [Step(FakeSFT), Step(FakeEval), Step(_Recorder)], seed_inputs=[ds])
+    assert res.ok
+    assert seen["got_kind"] == "adapter"   # the evaluated adapter, not "eval"
+
+
 def test_director_marks_failed_stage(tmp_path):
     reg = Registry(tmp_path / "artifacts.jsonl")
     ds = reg.register(DatasetArtifact(uri="d.jsonl"))
