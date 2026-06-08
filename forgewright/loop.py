@@ -158,7 +158,11 @@ class Agent:
         self._log("goal", goal=goal)
         recent: list[str] = []
 
-        for step in range(1, self.max_steps + 1):
+        # max_steps <= 0 means run until the goal is met (no step-budget hard stop); the
+        # doom-loop guard (identical call repeated 3x) is the safety net against dead loops.
+        step = 0
+        while self.max_steps <= 0 or step < self.max_steps:
+            step += 1
             turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
             self.ctx.add_assistant(turn)
             self._log(
@@ -194,7 +198,7 @@ class Agent:
                 )
             self.ctx.maybe_compact()
 
-        return LoopResult(False, self.max_steps, "step budget exhausted")
+        return LoopResult(False, step, "step budget exhausted")
 
     def _dispatch(self, tc: ToolCall, recent: list[str]) -> ToolResult:
         tool = self.tools.get(tc.name)

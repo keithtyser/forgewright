@@ -116,7 +116,7 @@ def run(
         None, "--hardware", help="Targets: 'local,ssh://user@host/workdir'."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions (unattended)."),
-    max_steps: int = typer.Option(80, "--max-steps", help="Max agent steps."),
+    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps (0 = run until the goal is met)."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
 ) -> None:
     """Run an autonomous post-training goal."""
@@ -183,7 +183,7 @@ def interactive(
     brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
     hardware: Optional[str] = typer.Option(None, "--hardware", help="Targets: 'local,ssh://user@host/workdir'."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions."),
-    max_steps: int = typer.Option(80, "--max-steps", help="Max agent steps per message."),
+    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps per message (0 = until the goal is met)."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
 ) -> None:
     """Interactive Forgewright session (the default). Chat with the agent across turns."""
@@ -249,7 +249,7 @@ def interactive(
 def serve(
     brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
-    max_steps: int = typer.Option(80, "--max-steps", help="Max agent steps per turn."),
+    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps per turn (0 = until the goal is met)."),
 ) -> None:
     """Backend serve loop over stdin/stdout newline-JSON (what the terminal-kit TUI spawns).
 
@@ -271,19 +271,11 @@ def serve(
         max_steps=max_steps,
     )
 
-    gov = settings.governor
-
     def handle_turn(text: str, reporter, permissions) -> None:
         # reuse the one agent (persistent context); bind this turn's reporter + approver
         agent.reporter = reporter
         agent.permissions = permissions
         _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
-        # the safety envelope for this turn (the UI renders it as a guardrails gauge).
-        # max_steps is the ENFORCED agent-loop cap; gpu/cost/wall are governor targets.
-        reporter("budget", {
-            "role": "Director", "max_steps": max_steps, "max_gpu_hours": gov.max_gpu_hours,
-            "max_cost_usd": gov.max_cost_usd, "max_wall_clock_hours": gov.max_wall_clock_hours,
-        })
         agent.run(text)
 
     def handle_command(name: str, args: dict, reporter, emit) -> None:

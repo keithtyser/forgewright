@@ -144,7 +144,6 @@ function interactive(brain) {
           for (let i = 1; i < lines.length; i++) w('  ' + lines[i] + '\n');
         }
         if (obj.role && obj.role !== 'agent') hud.activeRole = obj.role;
-        if (obj.step != null) hud.agentStep = obj.step;     // the enforced agent-loop step budget
         if (obj.usage && obj.usage.total_tokens) hud.tokens = obj.usage.total_tokens;
         break;
       }
@@ -202,8 +201,6 @@ function interactive(brain) {
         if (obj.lr != null) x.lr = obj.lr;
         break;
       }
-      case 'budget':
-        hud.budget = obj; break;
       case 'progress':
         w('  ' + A.dim + '⎿  ' + clip(obj.text, 400) + A.r + '\n'); break;
       case 'graph':
@@ -294,8 +291,8 @@ function interactive(brain) {
   const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
-  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0, agentStep: null,
-    pipeline: null, metric: null, budget: null, activeRole: null, lastAction: '' };
+  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0,
+    pipeline: null, metric: null, activeRole: null, lastAction: '' };
   // session provenance graph, accumulated from `artifact` events for /graph
   const sessionGraph = [];
   const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
@@ -368,26 +365,6 @@ function interactive(brain) {
     lb.add(' · '); lb.add(el + 's', A.dim);
     if (hud.tokens) { lb.add(' · '); lb.add('↑' + fmtTok(hud.tokens) + ' tok', A.dim); }
     out.push(lb.str());
-
-    // guardrails row: the governor's safety envelope, with a live step gauge vs the step cap
-    if (hud.budget && maxw >= 40) {
-      const b = hud.budget;
-      const lb2 = lineBuilder(maxw); lb2.add('  ');
-      lb2.add('guardrails ', A.dim);
-      // the agent-step budget is the one cap that is actually enforced; show it as a live gauge
-      if (hud.agentStep != null && b.max_steps) {
-        const frac = Math.max(0, Math.min(1, hud.agentStep / b.max_steps));
-        const W = 10, fill = Math.round(frac * W);
-        const near = frac >= 0.85;
-        lb2.addRaw((near ? A.yellow : A.green) + '▰'.repeat(fill) + A.r + A.dim + '▱'.repeat(W - fill) + A.r, W);
-        lb2.add(' ' + hud.agentStep + '/' + b.max_steps + ' steps', near ? A.yellow : A.dim);
-      } else {
-        lb2.add('≤' + b.max_steps + ' steps', A.dim);
-      }
-      lb2.add('  ·  ', A.dim);
-      lb2.add('≤' + b.max_gpu_hours + ' GPU·h  ·  ≤$' + b.max_cost_usd + '  ·  ≤' + b.max_wall_clock_hours + 'h wall', A.dim);
-      out.push(lb2.str());
-    }
     return out;
   }
   const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
@@ -426,8 +403,8 @@ function interactive(brain) {
     hud.prevLines = 0;
   }
   function hudResetTurn() {
-    hud.start = Date.now(); hud.i = 0; hud.tokens = 0; hud.agentStep = null;
-    hud.pipeline = null; hud.metric = null; hud.budget = null; hud.activeRole = null; hud.lastAction = '';
+    hud.start = Date.now(); hud.i = 0; hud.tokens = 0;
+    hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = '';
   }
   function startStatus() {
     if (!hud.start) hud.start = Date.now();
@@ -440,13 +417,23 @@ function interactive(brain) {
     hudClear();
   }
 
+  // A bordered input box (top rule with a right-aligned brain label, the ❯ line, bottom rule),
+  // like Claude Code. We draw all three lines, then move the cursor back up into the box so
+  // inputField edits inside it; on submit we drop below the box so the reply renders under it.
+  function boxTop(width, label) {
+    if (!label) return '─'.repeat(Math.max(0, width));
+    const tail = ' ' + label + ' ──';
+    return tail.length >= width ? '─'.repeat(Math.max(0, width)) : '─'.repeat(width - tail.length) + tail;
+  }
   function prompt() {
     if (busy || awaitingApproval) return;
-    // a clear, unmistakable "your turn" prompt
-    w('\n' + A.dim + '─── your turn ' + '─'.repeat(Math.max(0, ((term.width || 80) - 16))) + A.r + '\n');
-    w(A.green + A.b + '❯ ' + A.r);
+    const width = term.width || 80;
+    w('\n' + A.dim + boxTop(width, currentBrain || '') + A.r + '\n');   // top rule (+ brain label)
+    w(A.green + A.b + '❯ ' + A.r);                                       // input line
+    w('\n' + A.dim + '─'.repeat(width) + A.r);                          // bottom rule
+    w('\x1b[1A\r\x1b[2C');                                              // up into the box, past "❯ "
     term.inputField({ cancelable: true }, (err, input) => {
-      w('\n');
+      w('\r\n\n');                                                      // drop below the box
       const t = (input || '').trim();
       if (!t) return prompt();
       if (t[0] === '/') return handleSlash(t);

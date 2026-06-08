@@ -156,11 +156,13 @@ Linux Blackwell box; Forgewright orchestrates them locally or over SSH.
 
 While the swarm works, a panel hovers above the prompt showing the pipeline (each
 specialist's stage state), the active specialist, training step/loss/reward with sparklines,
-a guardrails gauge (the governor's step/GPU-hour/cost/wall caps with a live step bar),
 elapsed, and tokens. Training telemetry is structured: the backend taps trainer output into
 typed `metric` events the HUD consumes directly. Produced artifacts stream into the transcript
 as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`), and `/graph` draws the
 full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead.
+
+By default the agent runs until the goal is met (no step-budget hard stop); a repetition
+guard still breaks true dead loops. Set `--max-steps N` for a bounded run if you want one.
 
 ## Traces
 

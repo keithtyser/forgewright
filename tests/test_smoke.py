@@ -85,6 +85,14 @@ def test_agent_loop_with_fake_brain():
     assert res.final == "all done"
 
 
+def test_unbounded_steps_runs_until_goal_met():
+    # max_steps=0 means no step-budget hard stop; the loop runs until a turn has no tool calls
+    turns = [AssistantTurn("", [ToolCall(str(i), "echo_tool", {"text": str(i)})]) for i in range(6)]
+    turns.append(AssistantTurn("done"))
+    res = Agent(FakeBrain(turns), ToolRegistry([EchoTool()]), max_steps=0).run("go")
+    assert res.done is True and res.final == "done" and res.steps == 7
+
+
 def test_doom_loop_guard():
     same = lambda: AssistantTurn("", [ToolCall("x", "echo_tool", {"text": "loop"})])
     turns = [same(), same(), same(), same(), AssistantTurn("stopped")]
