@@ -62,7 +62,9 @@ class Abliterator(Specialist):
         self.validate_inputs(inputs)
         model = inputs[0]
         family = model.meta.get("family") or "model"
-        source = model.uri
+        # collect/export need LOCAL weights; if handed a bare HF id, prefer a local mirror so we
+        # run in-container (where transformers knows the arch) instead of failing on a remote id.
+        source = self._resolve_local(model.uri)
         # A UNIQUE, timestamped output name so we can never collide with (or silently inherit)
         # a pre-existing abliterated model directory. If this run does not write weights here,
         # the dir simply will not exist -> the gate fails honestly.
@@ -104,6 +106,15 @@ class Abliterator(Specialist):
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok, output=f"abliterated ModelArtifact {art.id}")
         return art
+
+    def _resolve_local(self, uri: str) -> str:
+        """Prefer a local checkpoint over a bare HF id. Paths (~, /, .) pass through; a bare id
+        like 'Qwen/Qwen3.5-0.8B' resolves to '~/models/Qwen3.5-0.8B' when the host has it."""
+        if uri.startswith(("~", "/", ".")):
+            return uri
+        stem = uri.rstrip("/").split("/")[-1]
+        cand = f"~/models/{stem}"
+        return cand if self._host_run(f"test -d {cand} && echo yes") else uri
 
     def _host_run(self, cmd: str, timeout: int = 60) -> str:
         """Run a quick shell command on this specialist's host (ssh) or locally; return stdout."""

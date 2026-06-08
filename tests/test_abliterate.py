@@ -123,6 +123,19 @@ def test_abliterator_fails_on_nonzero_exit(tmp_path, monkeypatch):
     assert art.gate.passed is False and "did not exit cleanly" in art.gate.verdict
 
 
+def test_abliterator_resolves_hf_id_to_local_mirror(tmp_path, monkeypatch):
+    abl = _abliterator(tmp_path, exit_code=0, fresh=True, monkeypatch=monkeypatch)
+    # a real path passes through unchanged (no host call)
+    assert abl._resolve_local("/home/u/models/Qwen3.5-0.8B") == "/home/u/models/Qwen3.5-0.8B"
+    assert abl._resolve_local("~/models/X") == "~/models/X"
+    # a bare HF id resolves to a local mirror when the host reports it exists
+    monkeypatch.setattr(type(abl), "_host_run", lambda self, cmd, timeout=60: "yes")
+    assert abl._resolve_local("Qwen/Qwen3.5-0.8B") == "~/models/Qwen3.5-0.8B"
+    # ...but stays the HF id when no local mirror is present
+    monkeypatch.setattr(type(abl), "_host_run", lambda self, cmd, timeout=60: "")
+    assert abl._resolve_local("Qwen/Qwen3.5-0.8B") == "Qwen/Qwen3.5-0.8B"
+
+
 def test_read_abliterate_metrics(tmp_path: Path):
     p = tmp_path / "scores.csv"
     p.write_text(
