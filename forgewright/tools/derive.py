@@ -101,6 +101,10 @@ class DerivePlanTool(Tool):
                 "verify the abliterate/LoRA target module names before editing weights.")
         if not supported:
             plan["warnings"].append("this GPU supports no quantization; plan serves bf16.")
+        if arch not in ("blackwell", "unknown"):
+            plan["warnings"].append(
+                f"the default model-forge posttrain container is built for Blackwell; on {arch} set "
+                "MODEL_FORGE_POSTTRAIN_IMAGE to an arch-appropriate image (use configure_env) before GPU jobs.")
 
         return ToolResult(True, _summary(plan), {"plan": plan})
 

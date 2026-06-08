@@ -84,3 +84,21 @@ def build_recipe(name: str, **params) -> tuple[list[Step], list[Artifact]]:
     if name not in RECIPES:
         raise ValueError(f"unknown recipe '{name}'; known: {sorted(RECIPES)}")
     return RECIPES[name](**params)
+
+
+def plan_recipe_name(goal: str) -> str:
+    """Pick the recipe that best fits a free-form goal, so the swarm can run a job even when the
+    user didn't name a recipe. Maps intent keywords to the canonical pipelines."""
+    g = (goal or "").lower()
+    publishing = "publish" in g or "release" in g or "upload" in g
+    if any(k in g for k in ("abliterate", "uncensor", "uncensored", "refus", "jailbreak", "decensor")):
+        return "abliterate"
+    if any(k in g for k in ("grpo", "rlvr", "reinforcement", "reward", "verifiable", " rl ")):
+        return "task_grpo"
+    if any(k in g for k in ("quantize", "quantization", "nvfp4", "fp8", "int8", "awq", "compress",
+                            "speed up", "speedup", "throughput", "latency", "faster serving")):
+        return "quantize_serve"
+    if any(k in g for k in ("fine-tune", "finetune", "fine tune", "uplift", "sft", "distil",
+                            "train on", "improve", "teach")):
+        return "uplift_publish" if publishing else "uplift"
+    return "uplift"   # sensible default: curate -> SFT -> eval

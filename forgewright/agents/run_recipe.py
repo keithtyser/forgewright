@@ -13,7 +13,7 @@ import json
 from typing import Any, Optional
 
 from forgewright.agents.director import Director
-from forgewright.agents.recipes import RECIPES, build_recipe
+from forgewright.agents.recipes import RECIPES, build_recipe, plan_recipe_name
 from forgewright.contracts import DatasetArtifact, ModelArtifact
 from forgewright.registry import Registry
 from forgewright.tools.base import Tool, ToolResult
@@ -61,7 +61,7 @@ class RunRecipeTool(Tool):
         "Dispatch the post-training SPECIALIST SWARM via the Director by running a named recipe. "
         "Use this for end-to-end post-training jobs (vs calling forge stages yourself). "
         "recipe: 'uplift' (curate->SFT->eval), 'task_grpo' (GRPO->eval), 'quantize_serve' "
-        "(NVFP4->serving-opt), 'abliterate', 'uplift_publish'. params is a JSON object: "
+        "(quant->serving-opt), 'abliterate', 'uplift_publish', or 'auto' (pick from the goal). params: "
         "uplift -> {family, source, seed_paths|seed_path, holdout, max_steps}; task_grpo -> "
         "{family, source, dataset_uri, holdout, max_steps}; quantize_serve/abliterate -> "
         "{family, model_uri, objective|strength}. Long-running; returns the artifact lineage + gate."
@@ -101,6 +101,17 @@ class RunRecipeTool(Tool):
                 params = json.loads(params)
             except json.JSONDecodeError:
                 return ToolResult(False, f"params must be a JSON object, got: {params[:200]}")
+        # 'auto' (or an unrecognized name) -> plan the recipe from the goal so the swarm can run
+        # a job even when the user didn't name one.
+        if recipe == "auto" or recipe not in RECIPES:
+            planned = plan_recipe_name(goal or recipe)
+            if self.reporter:
+                try:
+                    self.reporter("assistant", {"role": "Director",
+                                  "content": f"planned recipe '{planned}' from the goal"})
+                except Exception:  # noqa: BLE001
+                    pass
+            recipe = planned
         try:
             steps, seed = _resolve(recipe, params, self.registry)
         except Exception as e:  # noqa: BLE001

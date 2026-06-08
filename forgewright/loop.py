@@ -65,15 +65,16 @@ How you work:
   go through the `forge` tool; LONG stages (quantize export, finetune/ablate run) go through
   launch_job (command="bash forge <stage> ...", cwd=the model-forge repo) then poll
   monitor_job / tail_logs.
-- NVFP4 quantize flow: `forge quantize plan` -> launch_job `forge quantize export` -> ALWAYS
-  benchmark the BASE bf16 variant's tok/s FIRST, then the quantized variant's tok/s (serve each,
-  then `forge bench serve ...`), and report the quantized-vs-bf16 speedup -> `forge eval` the
-  quantized variant -> `forge quantize nvfp4-gate` (it compares quantized vs base for speedup +
-  quality); publish ONLY after the gate passes, via `forge_publish`. Never claim a speedup without
-  the measured bf16 baseline. Rehearse with dry_run / `plan` first.
+- Quantize flow (the method follows the GPU): call `derive_plan` first to pick the method —
+  NVFP4 on Blackwell, FP8 on Hopper/Ada, INT8/AWQ on Ampere, bf16 if none. Then `forge quantize
+  plan` -> launch_job `forge quantize export` -> ALWAYS benchmark the BASE bf16 variant's tok/s
+  FIRST, then the quantized variant's tok/s (serve each, then `forge bench serve ...`), and report
+  the quantized-vs-bf16 speedup -> `forge eval` the quantized variant -> gate it vs base for speedup
+  + quality (`forge quantize nvfp4-gate` for NVFP4); publish ONLY after the gate passes, via
+  `forge_publish`. Never claim a speedup without the measured bf16 baseline. Rehearse with `plan` first.
 - First-time quant gotchas: use scaffold_quant_config for a family lacking a config; the gate needs
   `forge quantize export --write-plan` (the export-plan artifact), a BASE eval too (for card/behavior),
-  and a speedup-gated config (gates.nvfp4.min_output_speedup; no static tok/s floor); forge_publish
+  and a speedup-gated config (gates.<method>.min_output_speedup; no static tok/s floor); forge_publish
   handles the HF cache/Xet fix; lift any family-config promotion.blocked_actions:[hf_upload] once the
   gate passes. Fix bad source snapshots first: synthesize a missing generation_config.json from
   config.json, and rename model.safetensors-* shards to model-* (and update the safetensors index).
@@ -82,8 +83,9 @@ How you work:
   scaffold_finetune_config <family> --source <hf_model> --data-path <distill.jsonl> (it bakes the scars:
   assistant_only_loss/train_on_responses_only, conservative LR, strict <think> + holdout-overlap hygiene),
   then `forge finetune --config <cfg> plan` and `... prepare --overwrite`. Training runs INSIDE the
-  model-forge-posttrain-tf5 container (the host .venv is torch+cpu; its run.sh uses systemd-run which fails
-  over SSH) — launch_job the command from build_container_train_command(<name>) (DETACHED; poll). The LoRA
+  model-forge posttrain container (the host .venv is torch+cpu; its run.sh uses systemd-run which fails
+  over SSH; the default image is Blackwell-built, so on Ampere/Hopper set MODEL_FORGE_POSTTRAIN_IMAGE via
+  configure_env first) — launch_job the command from build_container_train_command(<name>) (DETACHED; poll). The LoRA
   adapter lands in the config's model.output_dir. Eval-gate the adapter vs BASE: for a verifiable task use the
   self-contained held-out gate (skills.eval_gate: write_eval_gate + build_container/eval_gate command → PASS/
   REGRESSION on a held-out {prompt,answer} set, scored with the training reward); for uplift, serve the adapter

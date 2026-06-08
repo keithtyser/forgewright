@@ -76,3 +76,13 @@ def test_run_recipe_tool_handles_json_string_params(tmp_path, monkeypatch):
     tool = RunRecipeTool(registry=Registry(tmp_path / "a.jsonl"))
     res = tool.run("uplift", '{"family": "q08"}')   # params as a JSON string
     assert res.ok
+
+
+def test_plan_recipe_name_from_goal():
+    from forgewright.agents.recipes import plan_recipe_name
+    assert plan_recipe_name("make qwen an uncensored assistant") == "abliterate"
+    assert plan_recipe_name("quantize llama for faster serving") == "quantize_serve"
+    assert plan_recipe_name("GRPO on a verifiable math dataset") == "task_grpo"
+    assert plan_recipe_name("fine-tune and publish a reasoning model") == "uplift_publish"
+    assert plan_recipe_name("uplift the 0.8B with distillation") == "uplift"
+    assert plan_recipe_name("do something vague") == "uplift"   # sensible default

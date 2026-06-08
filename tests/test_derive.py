@@ -45,6 +45,14 @@ def test_ampere_picks_int8(monkeypatch):
     _fake_gpu(monkeypatch, "ampere", ["int8", "awq", "gptq"])
     plan = DerivePlanTool(runner=_FakeForge()).run(model="/m/x").meta["plan"]
     assert plan["quant_method"] == "int8"
+    # non-Blackwell -> warn that the default container image needs overriding
+    assert any("MODEL_FORGE_POSTTRAIN_IMAGE" in w for w in plan["warnings"])
+
+
+def test_blackwell_no_container_warning(monkeypatch):
+    _fake_gpu(monkeypatch, "blackwell", ["nvfp4"])
+    plan = DerivePlanTool(runner=_FakeForge()).run(model="/m/x").meta["plan"]
+    assert not any("MODEL_FORGE_POSTTRAIN_IMAGE" in w for w in plan["warnings"])
 
 
 def test_no_quant_support_serves_bf16(monkeypatch):
