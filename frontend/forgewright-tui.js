@@ -49,43 +49,54 @@ function interactive(brain) {
   const { markedTerminal } = require('marked-terminal');
   const marked = new Marked(markedTerminal({ tab: 2, reflowText: true, width: Math.max(60, (term.width || 100) - 4) }));
 
-  const renderMarkdown = (text) => {
+  const renderMarkdownLines = (text) => {
     let s;
     try { s = String(marked.parse(String(text))); } catch (e) { s = String(text); }
-    return s.replace(/\s+$/, '').split('\n').map((l) => '  ' + l).join('\n');
+    return s.replace(/\s+$/, '').split('\n');
   };
-  const badge = (role) => {
-    const bg = ROLE_BG[role] || '\x1b[100m';
-    w('\n' + bg + '\x1b[30m\x1b[1m ' + (role || 'agent') + ' ' + A.r + '\n');
+  const dot = (color) => color + '●' + A.r;
+  const roleDot = (role) => ROLE_FG[role] || '\x1b[96m';
+  const roleLabel = (role) => (role && role !== 'agent') ? A.dim + role + ' ' + A.r : '';
+  const primaryArg = (obj) => {
+    const a = obj.args;
+    if (!a || typeof a !== 'object') return clip(a, 90);
+    if (a.command) return clip(a.command, 90);
+    if (a.args) return clip(a.args, 90);
+    if (a.recipe) return clip(a.recipe + (a.params ? ' ' + JSON.stringify(a.params) : ''), 90);
+    const ks = Object.keys(a);
+    return ks.length ? clip(JSON.stringify(a), 90) : '';
   };
 
+  // Claude-Code-style: `●` action bullets (colored by role/status) with `⎿` result lines.
   function renderEvent(obj) {
     switch (obj.type) {
       case 'ready':
-        w(A.dim + '\n  ready. describe a post-training job, or ask a question.\n' + A.r); break;
+        w('\n' + A.dim + '  ready. describe a post-training job, or ask a question.' + A.r + '\n'); break;
       case 'bye':
-        w(A.dim + '\n  session ended.\n' + A.r); break;
+        w('\n' + A.dim + '  session ended.' + A.r + '\n'); break;
       case 'assistant': {
         const content = String(obj.content || '').trim();
-        if (content) { badge(obj.role); w(renderMarkdown(content) + '\n'); }
-        const calls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
-        if (calls.length) w('  ' + A.cyan + '↳ ' + calls.join(', ') + A.r + '\n');
+        if (content) {
+          const lines = renderMarkdownLines(content);
+          w('\n' + dot(roleDot(obj.role)) + ' ' + roleLabel(obj.role) + (lines[0] || '') + '\n');
+          for (let i = 1; i < lines.length; i++) w('  ' + lines[i] + '\n');
+        }
+        if (obj.usage && obj.usage.total_tokens) status.tokens = obj.usage.total_tokens;
         break;
       }
       case 'tool': {
         const ok = obj.ok !== false;
-        const rc = ROLE_FG[obj.role] || '';
-        const mark = ok ? A.green + '✓' : A.red + '✗';
-        const a = obj.args && Object.keys(obj.args).length ? ' ' + A.dim + clip(JSON.stringify(obj.args), 120) + A.r : '';
-        w('  ' + mark + A.r + ' ' + rc + (obj.tool || '') + A.r + a + '\n');
+        const arg = primaryArg(obj);
+        w(dot(ok ? A.green : A.red) + ' ' + roleLabel(obj.role) + (obj.tool || '') +
+          (arg ? A.dim + '(' + arg + ')' + A.r : '') + '\n');
         const out = String(obj.output || '').trim();
-        if (out) w('      ' + A.dim + clip(out, 500) + A.r + '\n');
+        if (out) w('  ' + A.dim + '⎿  ' + clip(out, 400) + A.r + '\n');
         break;
       }
       case 'progress':
-        w('      ' + A.dim + clip(obj.text, 400) + A.r + '\n'); break;
+        w('  ' + A.dim + '⎿  ' + clip(obj.text, 400) + A.r + '\n'); break;
       case 'done':
-        if (obj.ok === false) w('\n  ' + A.red + '✗ ' + clip(obj.error, 400) + A.r + '\n'); break;
+        if (obj.ok === false) w('\n' + dot(A.red) + ' ' + A.red + clip(obj.error, 400) + A.r + '\n'); break;
       default: break;
     }
   }
@@ -101,15 +112,21 @@ function interactive(brain) {
     process.exit(1);
   });
 
-  let busy = false, awaitingApproval = false, spinner = null;
+  let busy = false, awaitingApproval = false;
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + '\n');
 
-  async function startThinking() {
-    try { stopThinking(); spinner = await term.spinner('impulse'); term(A.dim + ' working…' + A.r); } catch (e) { spinner = null; }
+  // a single in-place status line: glyph + elapsed + running token count (Claude-Code style)
+  const GLYPHS = ['✻', '✽', '✢', '✳', '∗'];
+  const status = { timer: null, start: 0, tokens: 0, i: 0 };
+  const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
+  function drawStatus() {
+    const el = Math.round((Date.now() - status.start) / 1000);
+    const g = GLYPHS[(status.i++) % GLYPHS.length];
+    const tok = status.tokens ? ' · ↑ ' + fmtTok(status.tokens) + ' tokens' : '';
+    w('\r\x1b[2K' + '\x1b[35m' + g + A.r + ' ' + A.dim + 'working… (' + el + 's' + tok + ')' + A.r);
   }
-  function stopThinking() {
-    try { if (spinner) { spinner.animate(false); spinner = null; term.column(1); term.eraseLine(); } } catch (e) { spinner = null; }
-  }
+  function startStatus() { stopStatus(); status.start = Date.now(); status.i = 0; status.timer = setInterval(drawStatus, 140); drawStatus(); }
+  function stopStatus() { if (status.timer) { clearInterval(status.timer); status.timer = null; } w('\r\x1b[2K'); }
 
   function prompt() {
     if (busy || awaitingApproval) return;
@@ -118,13 +135,13 @@ function interactive(brain) {
     w(A.green + A.b + '❯ ' + A.r);
     term.inputField({ cancelable: true }, (err, input) => {
       w('\n');
-      if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); startThinking(); }
+      if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); startStatus(); }
       else prompt();
     });
   }
 
   function handleApproval(obj) {
-    awaitingApproval = true; stopThinking();
+    awaitingApproval = true; stopStatus();
     w('\n' + A.yellow + '─── approval needed ' + '─'.repeat(Math.max(0, ((term.width || 80) - 22))) + A.r + '\n');
     w('  ' + A.yellow + A.b + '⚠ ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
     if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + clip(JSON.stringify(obj.args), 200) + A.r + '\n');
@@ -134,7 +151,7 @@ function interactive(brain) {
       w('\n');
       send({ type: 'approval_response', decision: decisions[(resp && resp.selectedIndex != null) ? resp.selectedIndex : 3] });
       awaitingApproval = false;
-      if (busy) startThinking();
+      if (busy) startStatus();
     });
   }
 
@@ -144,17 +161,17 @@ function interactive(brain) {
     let obj; try { obj = JSON.parse(line); } catch (e) { return; }
     if (obj.type === 'approval_request') { handleApproval(obj); return; }
     if (obj.type === 'done') busy = false;     // before render so the spinner does not restart
-    stopThinking();
+    stopStatus();
     renderEvent(obj);
     // restart the spinner only if more work is coming (a tool call, or an assistant turn
     // that requested tools). A final text answer with no tool_calls ends the turn -> no flash.
     const finalAnswer = obj.type === 'assistant' &&
       (!Array.isArray(obj.tool_calls) || obj.tool_calls.length === 0);
-    if (busy && !awaitingApproval && obj.type !== 'done' && !finalAnswer) startThinking();
+    if (busy && !awaitingApproval && obj.type !== 'done' && !finalAnswer) startStatus();
     if (obj.type === 'ready' || obj.type === 'done') prompt();
-    if (obj.type === 'bye') { stopThinking(); term.processExit(0); }
+    if (obj.type === 'bye') { stopStatus(); term.processExit(0); }
   });
-  child.on('exit', (code) => { stopThinking(); term.processExit(code || 0); });
+  child.on('exit', (code) => { stopStatus(); term.processExit(code || 0); });
   term.on('key', (name) => {
     if (name === 'CTRL_C') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); }
   });
