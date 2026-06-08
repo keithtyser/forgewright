@@ -26,6 +26,7 @@ from forgewright.ledger.ledger import Ledger
 from forgewright.loop import SYSTEM_PROMPT, Agent
 from forgewright.permissions import PermissionPolicy
 from forgewright.tools.base import ToolRegistry
+from forgewright.tools.discover import DiscoverTool
 from forgewright.tools.files import EditFileTool, ReadFileTool, WriteFileTool
 from forgewright.agents.run_recipe import RunRecipeTool
 from forgewright.registry import Registry
@@ -80,6 +81,7 @@ def build_registry() -> ToolRegistry:
             WriteFileTool(),
             EditFileTool(),
             GPUInspectTool(),
+            DiscoverTool(forge),
             LaunchJobTool(jm),
             MonitorJobTool(jm),
             TailLogsTool(jm),
