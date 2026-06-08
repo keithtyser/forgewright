@@ -22,8 +22,7 @@ function renderTest() {
     if (!line) return;
     let obj;
     try { obj = JSON.parse(line); } catch (e) { return; }
-    const r = formatEvent(obj);
-    if (r) process.stdout.write('[' + r.color + '] ' + r.text + '\n');
+    for (const r of formatEvent(obj)) process.stdout.write('[' + r.color + '] ' + r.text + '\n');
   });
 }
 
@@ -48,12 +47,27 @@ function interactive(brain) {
 
   let busy = false;
   let awaitingApproval = false;
+  let spinner = null;
 
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + '\n');
 
+  async function startThinking() {
+    try {
+      stopThinking();
+      spinner = await term.spinner('impulse');
+      term.gray(' working…');
+    } catch (e) { spinner = null; }
+  }
+  function stopThinking() {
+    try {
+      if (spinner) { spinner.animate(false); spinner = null; term.column(1); term.eraseLine(); }
+    } catch (e) { spinner = null; }
+  }
+
   const show = (obj) => {
-    const r = formatEvent(obj);
-    if (r) { term[r.color](r.text); term('\n'); }
+    stopThinking();
+    for (const r of formatEvent(obj)) { term[r.color](r.text); term('\n'); }
+    if (busy && !awaitingApproval && obj.type !== 'done') startThinking();
   };
 
   function prompt() {
@@ -61,19 +75,21 @@ function interactive(brain) {
     term.brightGreen('\nyou › ');
     term.inputField({ cancelable: true }, (err, input) => {
       term('\n');
-      if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); }
+      if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); startThinking(); }
       else prompt();
     });
   }
 
   function handleApproval(obj) {
     awaitingApproval = true;
-    show(obj);
+    stopThinking();
+    for (const r of formatEvent(obj)) { term[r.color](r.text); term('\n'); }
     term.yellow('approve? [y/N] ');
     term.yesOrNo({ yes: ['y', 'Y'], no: ['n', 'N', 'ENTER'] }, (err, yes) => {
       term('\n');
       send({ type: 'approval_response', approved: !!yes });
       awaitingApproval = false;
+      if (busy) startThinking();
     });
   }
 
@@ -84,10 +100,11 @@ function interactive(brain) {
     let obj;
     try { obj = JSON.parse(line); } catch (e) { return; }
     if (obj.type === 'approval_request') { handleApproval(obj); return; }
+    if (obj.type === 'done') busy = false;   // set before show() so the spinner does not restart
     show(obj);
     if (obj.type === 'ready') prompt();
-    if (obj.type === 'done') { busy = false; prompt(); }
-    if (obj.type === 'bye') { term.processExit(0); }
+    if (obj.type === 'done') prompt();
+    if (obj.type === 'bye') { stopThinking(); term.processExit(0); }
   });
 
   child.on('exit', (code) => { term.processExit(code || 0); });
