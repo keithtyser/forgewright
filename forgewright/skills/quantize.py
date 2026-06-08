@@ -102,13 +102,13 @@ _ARCH_STRATEGY = {
     "gemma": ("gemma4_moe_modelopt", "scripts/quantization/gemma4_moe_nvfp4.py"),
 }
 
-# quant method -> (backend, qformat, kv_cache_qformat, gate_key). nvfp4/fp8 export today via
-# ModelOpt; int8/awq land with the model-forge Phase-2 export support.
+# quant method -> (backend, ModelOpt qformat, kv_cache_qformat, gate_key). All export through
+# ModelOpt; int8 = SmoothQuant W8A8, awq = INT4 AWQ (weight-only) for Ampere.
 _METHOD_SPEC = {
     "nvfp4": ("modelopt", "nvfp4", "fp8_cast", "nvfp4"),
     "fp8": ("modelopt", "fp8", "fp8_cast", "fp8"),
-    "int8": ("modelopt", "int8", "auto", "int8"),
-    "awq": ("autoawq", "int4_awq", "auto", "awq"),
+    "int8": ("modelopt", "int8_sq", "none", "int8"),
+    "awq": ("modelopt", "int4_awq", "none", "awq"),
 }
 
 
@@ -137,7 +137,11 @@ def scaffold_quant_config(
     """Render a quant config for ``family`` (speedup-gated). ``method`` is chosen for the GPU's
     arch (nvfp4/fp8/int8/awq); the backend/qformat/gate are derived from it."""
     backend, qformat, kv_cache_qformat, gate_key = _METHOD_SPEC.get(method, _METHOD_SPEC["nvfp4"])
-    strategy, script = _ARCH_STRATEGY.get(arch, _ARCH_STRATEGY["qwen"])
+    # nvfp4/fp8 use the arch-tuned scripts; int8/awq use ModelOpt's generic hf_ptq exporter.
+    if method in ("int8", "awq"):
+        strategy, script = "hf_ptq", ""
+    else:
+        strategy, script = _ARCH_STRATEGY.get(arch, _ARCH_STRATEGY["qwen"])
     return QUANT_CONFIG_TEMPLATE.format(
         family=family,
         method=method,

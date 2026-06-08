@@ -55,3 +55,16 @@ def test_scaffold_fp8_method():
 def test_write_quant_config_method_in_filename(tmp_path):
     p = write_quant_config(tmp_path, "qwen35_9b", method="fp8")
     assert p.name == "qwen35_9b_fp8_modelopt.yaml"
+
+
+def test_scaffold_int8_uses_smoothquant_qformat_and_hf_ptq():
+    cfg = scaffold_quant_config("llama3_8b", method="int8")
+    assert "method: int8" in cfg and "qformat: int8_sq" in cfg
+    assert "strategy: hf_ptq" in cfg          # generic ModelOpt exporter, not the arch nvfp4 script
+
+
+def test_scaffold_awq_uses_int4_awq_qformat():
+    cfg = scaffold_quant_config("llama3_8b", method="awq")
+    assert "method: awq" in cfg and "qformat: int4_awq" in cfg
+    assert "strategy: hf_ptq" in cfg
+    assert choose_quant_method(["int8", "awq", "gptq"], requested="awq") == "awq"

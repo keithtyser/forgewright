@@ -16,8 +16,8 @@ from forgewright.tools.base import ToolRegistry
 from forgewright.tools.forge import ForgeRunner, ForgeTool
 from forgewright.tools.jobs import JobManager, LaunchJobTool, MonitorJobTool, TailLogsTool
 
-# methods model-forge can export end to end today; int8/awq land with the Phase-2 export support.
-_EXECUTABLE = ("nvfp4", "fp8")
+# methods model-forge can export end to end (all via ModelOpt): NVFP4/FP8/INT8/AWQ.
+_EXECUTABLE = ("nvfp4", "fp8", "int8", "awq")
 
 _PROMPT = """\
 You are the Quantizer specialist: quantize a model with the best method the GPU's arch supports
