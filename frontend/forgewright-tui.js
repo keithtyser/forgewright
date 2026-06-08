@@ -113,7 +113,9 @@ function interactive(brain) {
 
   function prompt() {
     if (busy || awaitingApproval) return;
-    w('\n' + A.b + A.green + '› ' + A.r);
+    // a clear, unmistakable "your turn" prompt
+    w('\n' + A.dim + '─── your turn ' + '─'.repeat(Math.max(0, ((term.width || 80) - 16))) + A.r + '\n');
+    w(A.green + A.b + '❯ ' + A.r);
     term.inputField({ cancelable: true }, (err, input) => {
       w('\n');
       if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); startThinking(); }
@@ -123,7 +125,8 @@ function interactive(brain) {
 
   function handleApproval(obj) {
     awaitingApproval = true; stopThinking();
-    w('\n  ' + A.yellow + '⚠ approval: ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
+    w('\n' + A.yellow + '─── approval needed ' + '─'.repeat(Math.max(0, ((term.width || 80) - 22))) + A.r + '\n');
+    w('  ' + A.yellow + A.b + '⚠ ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
     if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + clip(JSON.stringify(obj.args), 200) + A.r + '\n');
     const items = ['approve once', 'approve all ' + (obj.tool || ''), 'YOLO: bypass all', 'deny'];
     const decisions = ['yes', 'all', 'yolo', 'no'];
@@ -143,7 +146,11 @@ function interactive(brain) {
     if (obj.type === 'done') busy = false;     // before render so the spinner does not restart
     stopThinking();
     renderEvent(obj);
-    if (busy && !awaitingApproval && obj.type !== 'done') startThinking();
+    // restart the spinner only if more work is coming (a tool call, or an assistant turn
+    // that requested tools). A final text answer with no tool_calls ends the turn -> no flash.
+    const finalAnswer = obj.type === 'assistant' &&
+      (!Array.isArray(obj.tool_calls) || obj.tool_calls.length === 0);
+    if (busy && !awaitingApproval && obj.type !== 'done' && !finalAnswer) startThinking();
     if (obj.type === 'ready' || obj.type === 'done') prompt();
     if (obj.type === 'bye') { stopThinking(); term.processExit(0); }
   });
