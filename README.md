@@ -122,14 +122,16 @@ forgewright --brain openrouter:deepseek/deepseek-v4-pro   # hosted, key in OPENR
 forgewright --brain anthropic:claude-opus-4-8             # key in ANTHROPIC_API_KEY
 forgewright --brain openai:gpt-5.1                        # key in OPENAI_API_KEY
 forgewright --brain vllm:qwen3.5-coder-30b@http://host:8000/v1   # local / self-hosted
-forgewright --brain oauth-codex                           # ChatGPT-login Codex (gpt-5-codex)
+forgewright --brain oauth-codex:gpt-5.5-codex             # ChatGPT-login Codex, explicit model
 ```
 
 `oauth-codex` reuses the credentials the official Codex CLI writes to `~/.codex/auth.json`,
 so run `codex login` (ChatGPT account) once first. Forgewright refreshes the access token
-automatically and talks to OpenAI's Codex Responses API. Use `oauth-codex:<model>` to pick a
-different Codex model. The Claude subscription tap is intentionally not supported (use an
-`anthropic:` API key instead).
+automatically and talks to OpenAI's Codex Responses API. When you pick Codex in the setup
+wizard it offers a model menu (gpt-5.5-codex, gpt-5.5, gpt-5.1-codex-max, gpt-5.1-codex,
+gpt-5.1, gpt-5-codex, gpt-5, gpt-5-mini) plus a free-text entry for any newer id; or pass
+`--brain oauth-codex:<model>` directly. The Claude subscription tap is intentionally not
+supported (use an `anthropic:` API key instead).
 
 Backend-only (no Node UI):
 

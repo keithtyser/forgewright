@@ -20,6 +20,19 @@ const { formatEvent } = require('./lib/render');
 // Written by the first-run setup wizard so the user configures their brain once. Same file
 // the backend reads (forgewright/credentials.py): ~/.forgewright/credentials.json.
 const OPENROUTER_DEFAULT_MODEL = 'openrouter:deepseek/deepseek-v4-pro';
+// OpenAI models reachable over the Codex (ChatGPT-login) Responses API, newest first. The
+// wizard offers these plus a free-text "Other" entry, so any model id (including ones newer
+// than this list) still works without a code change.
+const CODEX_MODELS = [
+  'gpt-5.5-codex',
+  'gpt-5.5',
+  'gpt-5.1-codex-max',
+  'gpt-5.1-codex',
+  'gpt-5.1',
+  'gpt-5-codex',
+  'gpt-5',
+  'gpt-5-mini',
+];
 function fwHome() { return process.env.FORGEWRIGHT_HOME || path.join(os.homedir(), '.forgewright'); }
 function credsPath() { return path.join(fwHome(), 'credentials.json'); }
 function codexAuthPath() {
@@ -294,7 +307,7 @@ function setupWizard(term) {
   return new Promise((resolve) => {
     w('\n' + A.b + '  Set up your brain' + A.r + A.dim + ' — how the agent connects to a model.' + A.r + '\n');
     w(A.dim + '  ↑/↓ to choose · enter to confirm' + A.r + '\n\n');
-    const items = ['OpenRouter API key  (hosted models)', 'Codex  (ChatGPT login / gpt-5-codex)'];
+    const items = ['OpenRouter API key  (hosted models)', 'Codex  (ChatGPT login / pick a GPT-5 model)'];
     term.singleColumnMenu(items, {
       selectedIndex: 0, cancelable: true, leftPadding: '    ', selectedLeftPadding: '  ❯ ',
       style: term.gray, selectedStyle: term.brightWhite.bgGreen,
@@ -326,17 +339,47 @@ function wizardOpenRouter(term, resolve) {
 
 function wizardCodex(term, resolve) {
   const authed = (() => { try { return fs.existsSync(codexAuthPath()); } catch (e) { return false; } })();
-  const creds = loadCreds();
-  creds.brain = 'oauth-codex';
-  delete creds.openrouter_api_key;
-  saveCreds(creds);
   if (authed) {
-    w(A.green + '  ✓ Codex login found at ' + codexAuthPath() + ' · saved.' + A.r + '\n');
+    w(A.green + '  ✓ Codex login found at ' + codexAuthPath() + A.r + '\n');
   } else {
     w('  No Codex login yet. In another terminal run ' + A.cyan + 'codex login' + A.r + ' (ChatGPT account),\n');
-    w('  then run ' + A.cyan + '/login' + A.r + ' here again. Starting anyway so you can do that now.\n');
+    w('  then run ' + A.cyan + '/login' + A.r + ' here again. Picking a model anyway so you can do that now.\n');
   }
-  resolve({ brain: 'oauth-codex', env: {} });
+  // let the user pick which OpenAI model to drive Codex with
+  w('\n  Choose an OpenAI model for Codex:\n');
+  w(A.dim + '  ↑/↓ to choose · enter to confirm' + A.r + '\n\n');
+  const saved = loadCreds().codex_model;
+  const items = CODEX_MODELS.concat(['Other (type a model id)…']);
+  const sel = Math.max(0, CODEX_MODELS.indexOf(saved));
+  term.singleColumnMenu(items, {
+    selectedIndex: sel, cancelable: true, leftPadding: '    ', selectedLeftPadding: '  ❯ ',
+    style: term.gray, selectedStyle: term.brightWhite.bgGreen,
+  }, (err, resp) => {
+    w('\n');
+    const idx = (resp && resp.selectedIndex != null && !resp.canceled) ? resp.selectedIndex : -1;
+    if (idx === -1) return resolve(null);                         // backed out
+    if (idx === items.length - 1) {                              // "Other": free-text entry
+      w('  Enter a model id ' + A.dim + '(e.g. gpt-5.5-codex)' + A.r + '\n');
+      w(A.green + A.b + '  ❯ ' + A.r);
+      term.inputField({ cancelable: true }, (e2, input) => {
+        w('\n');
+        finishCodex(resolve, (input || '').trim() || CODEX_MODELS[0]);
+      });
+      return;
+    }
+    finishCodex(resolve, CODEX_MODELS[idx]);
+  });
+}
+
+function finishCodex(resolve, model) {
+  const brain = 'oauth-codex:' + model;
+  const creds = loadCreds();
+  creds.brain = brain;
+  creds.codex_model = model;
+  delete creds.openrouter_api_key;
+  saveCreds(creds);
+  w(A.green + '  ✓ Codex model ' + A.b + model + A.r + A.green + ' saved · change anytime with /login' + A.r + '\n');
+  resolve({ brain: brain, env: {} });
 }
 
 function banner(term) {
