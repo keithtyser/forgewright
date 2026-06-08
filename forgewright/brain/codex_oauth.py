@@ -447,3 +447,64 @@ class CodexClient:
             raise BrainError(f"Codex Responses request failed: {e}") from e
 
         return parse_responses_sse("".join(chunks))
+
+    # -- model discovery -----------------------------------------------------
+    def list_models(self) -> list[str]:
+        """Best-effort: ask the ChatGPT backend which models this token can reach.
+
+        The endpoint is unofficial and its shape varies, so we try a couple of known paths and
+        parse whatever id-like field we find. Raises BrainError if none respond (the caller
+        falls back to a curated list)."""
+        import httpx
+
+        tokens = self._ensure_token()
+        headers = {
+            "Authorization": f"Bearer {tokens.access_token}",
+            "User-Agent": "forgewright-codex/0.1",
+            "Accept": "application/json",
+        }
+        if tokens.account_id:
+            headers["ChatGPT-Account-Id"] = tokens.account_id
+        endpoints = [
+            "https://chatgpt.com/backend-api/models",
+            "https://chatgpt.com/backend-api/codex/models",
+        ]
+        last = ""
+        for url in endpoints:
+            try:
+                resp = httpx.get(url, headers=headers, timeout=30)
+            except Exception as e:  # noqa: BLE001
+                last = str(e)
+                continue
+            if resp.status_code != 200:
+                last = f"{resp.status_code}: {resp.text[:120]}"
+                continue
+            try:
+                models = parse_models_payload(resp.json())
+            except Exception as e:  # noqa: BLE001
+                last = str(e)
+                continue
+            if models:
+                return models
+        raise BrainError(f"Codex model discovery failed ({last or 'no models returned'})")
+
+
+def parse_models_payload(data: Any) -> list[str]:
+    """Pull model ids out of a /models-style payload, tolerant of several shapes
+    ({models:[{slug|id}]}, {data:[{id}]}, or a bare list)."""
+    rows = []
+    if isinstance(data, dict):
+        rows = data.get("models") or data.get("data") or []
+    elif isinstance(data, list):
+        rows = data
+    out: list[str] = []
+    for r in rows:
+        if isinstance(r, str):
+            out.append(r)
+        elif isinstance(r, dict):
+            mid = r.get("slug") or r.get("id") or r.get("name")
+            if mid:
+                out.append(str(mid))
+    # de-dup, keep order
+    seen: set[str] = set()
+    return [m for m in out if not (m in seen or seen.add(m))]

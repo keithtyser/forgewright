@@ -17,19 +17,34 @@ import queue
 import threading
 from typing import Any, Callable, Optional
 
-from forgewright.frontend.bridge import StreamApprover, event_reporter, json_line_emitter
+from forgewright.frontend.bridge import (
+    StreamApprover,
+    event_reporter,
+    json_line_emitter,
+    metric_tap,
+)
 from forgewright.permissions import PermissionPolicy
 
 HandleTurn = Callable[[str, Callable[[str, dict], None], PermissionPolicy], None]
+# (name, args, reporter, emit) -> None. Handles instant control commands (e.g. /graph, /models)
+# that query state and stream events, without running a full agent turn.
+HandleCommand = Callable[[str, dict, Callable[[str, dict], None], Callable[[dict], None]], None]
 
 
 class BackendServer:
-    """Runs one turn at a time, emitting events. Frontend-agnostic."""
+    """Runs one turn (or instant command) at a time, emitting events. Frontend-agnostic."""
 
-    def __init__(self, handle_turn: HandleTurn, emit: Callable[[dict], None]) -> None:
+    def __init__(
+        self,
+        handle_turn: HandleTurn,
+        emit: Callable[[dict], None],
+        handle_command: Optional[HandleCommand] = None,
+    ) -> None:
         self.handle_turn = handle_turn
+        self.handle_command = handle_command
         self.emit = emit
-        self.reporter = event_reporter(emit)
+        # metric_tap turns trainer log output into typed `metric` events for the UI
+        self.reporter = metric_tap(event_reporter(emit))
         # one policy for the whole session, so "approve all" / "yolo" persist across turns
         self.permissions = PermissionPolicy()
 
@@ -41,19 +56,33 @@ class BackendServer:
         except Exception as e:  # noqa: BLE001 - report the failure, keep the session alive
             self.emit({"type": "done", "ok": False, "error": str(e)})
 
+    def run_command(self, msg: dict) -> None:
+        name, args = msg.get("name", ""), msg.get("args", {}) or {}
+        try:
+            if self.handle_command:
+                self.handle_command(name, args, self.reporter, self.emit)
+            else:
+                self.emit({"type": "assistant", "role": "agent", "content": f"unknown command: {name}"})
+            self.emit({"type": "done", "ok": True})
+        except Exception as e:  # noqa: BLE001
+            self.emit({"type": "done", "ok": False, "error": str(e)})
+
 
 def route(msg: dict, msg_q: "queue.Queue", approval_q: "queue.Queue") -> None:
     """Send a parsed client message to the turn queue or the approval queue."""
     t = msg.get("type")
     if t == "approval_response":
         approval_q.put(msg)
-    elif t in ("user_msg", "shutdown"):
+    elif t in ("user_msg", "command", "shutdown"):
         msg_q.put(None if t == "shutdown" else msg)
 
 
-def serve_stdio(handle_turn: HandleTurn, *, instream, outstream) -> None:
+def serve_stdio(
+    handle_turn: HandleTurn, *, instream, outstream, handle_command: Optional[HandleCommand] = None
+) -> None:
     """Blocking serve loop over two text streams (stdin/stdout in production). A reader
-    thread routes incoming lines; the main loop runs turns with a stream-backed approver."""
+    thread routes incoming lines; the main loop runs turns with a stream-backed approver,
+    and dispatches instant `command` messages to ``handle_command``."""
     def _write(s: str) -> None:
         outstream.write(s)
         try:
@@ -62,7 +91,7 @@ def serve_stdio(handle_turn: HandleTurn, *, instream, outstream) -> None:
             pass
 
     emit = json_line_emitter(_write)
-    server = BackendServer(handle_turn, emit)
+    server = BackendServer(handle_turn, emit, handle_command=handle_command)
     msg_q: "queue.Queue" = queue.Queue()
     approval_q: "queue.Queue" = queue.Queue()
 
@@ -84,6 +113,9 @@ def serve_stdio(handle_turn: HandleTurn, *, instream, outstream) -> None:
         msg = msg_q.get()
         if msg is None:
             break
+        if msg.get("type") == "command":
+            server.run_command(msg)
+            continue
         approver = StreamApprover(emit, approval_q.get)
         server.run_turn(str(msg.get("text", "")), ask_fn=approver)
     emit({"type": "bye"})

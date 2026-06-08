@@ -102,6 +102,31 @@ function formatEvent(obj) {
       const tag = obj.passed === false ? ' ✗' : (obj.passed === true ? ' ✓' : '');
       return [{ text: '◇ ' + obj.kind + '#' + String(obj.id || '').slice(-6) + par + met + tag, color: roleColor(role) }];
     }
+    case 'metric':
+    case 'budget':
+      return [];   // live HUD-only events; no transcript line
+    case 'graph': {
+      const nodes = Array.isArray(obj.nodes) ? obj.nodes : [];
+      if (!nodes.length) return [{ text: 'provenance graph: (empty)', color: 'gray' }];
+      const lines = [{ text: 'provenance graph (' + nodes.length + ' artifacts)', color: 'white' }];
+      nodes.forEach((n) => {
+        const t = n.passed === false ? ' ✗' : (n.passed === true ? ' ✓' : '');
+        const sc = (n.score != null) ? '  ' + (Math.round(n.score * 1000) / 1000) : '';
+        const par = (n.parents && n.parents.length) ? ' ← ' + n.parents.map((p) => String(p).slice(-6)).join(', ') : '';
+        lines.push({ text: '  ' + n.kind + '#' + String(n.id || '').slice(-6) + par + sc + t, color: roleColor(n.produced_by || '') });
+      });
+      return lines;
+    }
+    case 'models': {
+      const list = Array.isArray(obj.available) ? obj.available : [];
+      const lines = [{ text: 'models (' + (obj.source || '') + ')', color: 'white' }];
+      if (obj.note) lines.push({ text: '  ' + obj.note, color: 'gray' });
+      list.forEach((mid) => {
+        const cur = obj.current && (obj.current === mid || String(obj.current).endsWith(':' + mid));
+        lines.push({ text: '  ' + (cur ? '● ' : '· ') + mid + (cur ? ' (current)' : ''), color: cur ? 'green' : 'gray' });
+      });
+      return lines;
+    }
     case 'progress':
       return [{ text: '  ' + tag + clip(obj.text, 500), color: 'gray' }];
     case 'approval_request':

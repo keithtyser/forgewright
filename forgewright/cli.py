@@ -269,14 +269,66 @@ def serve(
         max_steps=max_steps,
     )
 
+    gov = settings.governor
+
     def handle_turn(text: str, reporter, permissions) -> None:
         # reuse the one agent (persistent context); bind this turn's reporter + approver
         agent.reporter = reporter
         agent.permissions = permissions
         _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
+        # the safety envelope for this turn (the UI renders it as a guardrails gauge)
+        reporter("budget", {
+            "role": "Director", "max_steps": gov.max_steps, "max_gpu_hours": gov.max_gpu_hours,
+            "max_cost_usd": gov.max_cost_usd, "max_wall_clock_hours": gov.max_wall_clock_hours,
+        })
         agent.run(text)
 
-    serve_stdio(handle_turn, instream=sys.stdin, outstream=sys.stdout)
+    def handle_command(name: str, args: dict, reporter, emit) -> None:
+        if name == "graph":
+            emit(_graph_event(Registry(), limit=int(args.get("limit", 40))))
+        elif name == "models":
+            emit(_models_event(provider))
+        else:
+            reporter("assistant", {"role": "agent", "content": f"unknown command: {name}"})
+
+    serve_stdio(handle_turn, instream=sys.stdin, outstream=sys.stdout, handle_command=handle_command)
+
+
+def _graph_event(registry, limit: int = 40) -> dict:
+    """Build a `graph` event: the recent provenance DAG (nodes + edges) from the registry."""
+    arts = registry.all()[-limit:]
+    nodes = []
+    for a in arts:
+        score = None
+        if a.gate is not None:
+            for k in ("score", "accuracy", "pass_rate", "reward"):
+                v = a.gate.metrics.get(k)
+                if isinstance(v, (int, float)):
+                    score = float(v)
+                    break
+        nodes.append({
+            "id": a.id, "kind": a.kind, "produced_by": a.produced_by,
+            "parents": list(a.parents),
+            "passed": (a.gate.passed if a.gate is not None else None),
+            "score": score,
+        })
+    return {"type": "graph", "nodes": nodes}
+
+
+def _models_event(provider) -> dict:
+    """Build a `models` event. For Codex, probe what the live token can reach; otherwise note
+    the current brain (discovery is Codex-only)."""
+    if provider.kind == "oauth-codex":
+        from forgewright.brain.codex_oauth import CodexClient
+
+        try:
+            models = CodexClient(model=provider.model).list_models()
+            return {"type": "models", "available": models, "current": provider.model, "source": "probe"}
+        except Exception as e:  # noqa: BLE001 - fall back to the curated list on the frontend
+            return {"type": "models", "available": [], "current": provider.model,
+                    "source": "error", "note": str(e)}
+    return {"type": "models", "available": [provider.model], "current": provider.model,
+            "source": "brain", "note": f"model discovery is Codex-only; current brain is {provider.kind}"}
 
 
 @cli.command()

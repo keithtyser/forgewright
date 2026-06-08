@@ -182,24 +182,78 @@ function interactive(brain) {
         const met = hm ? A.dim + '  ' + hm[0] + ' ' + A.r + A.white + (Math.round(hm[1] * 1000) / 1000) + A.r : '';
         w(col + '◇' + A.r + ' ' + col + obj.kind + A.r + A.dim + '#' + shortId(obj.id) + A.r + par + met + tag + '\n');
         hud.lastAction = 'produced ' + obj.kind + ' #' + shortId(obj.id);
+        sessionGraph.push({ id: obj.id, kind: obj.kind, produced_by: obj.role,
+          parents: Array.isArray(obj.parents) ? obj.parents : [],
+          passed: obj.passed, score: (headlineMetric(obj.metrics) || [null, null])[1] });
         break;
       }
-      case 'progress': {
-        w('  ' + A.dim + '⎿  ' + clip(obj.text, 400) + A.r + '\n');
-        const txt = String(obj.text || '');
-        const sm = txt.match(/step\s+(\d+)\s*\/\s*(\d+)/i);
-        const lm = txt.match(/loss[:=\s]+([0-9]*\.?[0-9]+)/i);
-        if (sm || lm) {
-          hud.metric = hud.metric || { step: 0, total: 0, loss: null, hist: [] };
-          if (sm) { hud.metric.step = +sm[1]; hud.metric.total = +sm[2]; }
-          if (lm) { hud.metric.loss = lm[1]; hud.metric.hist.push(parseFloat(lm[1])); if (hud.metric.hist.length > 24) hud.metric.hist.shift(); }
-        }
+      case 'metric': {
+        // structured training telemetry from the backend metric_tap (no frontend regex)
+        const keep = (a, v) => { a.push(+v); if (a.length > 28) a.shift(); return a; };
+        hud.metric = hud.metric || { step: null, total: null, loss: null, reward: null,
+          grad_norm: null, lr: null, histLoss: [], histReward: [] };
+        const x = hud.metric;
+        if (obj.step != null) x.step = obj.step;
+        if (obj.total != null) x.total = obj.total;
+        if (obj.loss != null) { x.loss = obj.loss; keep(x.histLoss, obj.loss); }
+        if (obj.reward != null) { x.reward = obj.reward; keep(x.histReward, obj.reward); }
+        if (obj.grad_norm != null) x.grad_norm = obj.grad_norm;
+        if (obj.lr != null) x.lr = obj.lr;
         break;
       }
+      case 'budget':
+        hud.budget = obj; break;
+      case 'progress':
+        w('  ' + A.dim + '⎿  ' + clip(obj.text, 400) + A.r + '\n'); break;
+      case 'graph':
+        renderGraph(Array.isArray(obj.nodes) ? obj.nodes : []); break;
+      case 'models':
+        renderModels(obj); break;
       case 'done':
         if (obj.ok === false) w('\n' + dot(A.red) + ' ' + A.red + clip(obj.error, 400) + A.r + '\n'); break;
       default: break;
     }
+  }
+
+  // /graph: draw the session's provenance DAG as an indented tree (roots -> children).
+  function renderGraph(nodes) {
+    if (!nodes.length) { w('\n' + A.dim + '  no artifacts in the registry yet.' + A.r + '\n'); return; }
+    const byId = {}; nodes.forEach((n) => { byId[n.id] = n; });
+    const kidsOf = {}; nodes.forEach((n) => (n.parents || []).forEach((p) => { (kidsOf[p] = kidsOf[p] || []).push(n.id); }));
+    const isRoot = (n) => !(n.parents || []).some((p) => byId[p]);
+    const roots = nodes.filter(isRoot);
+    w('\n' + A.b + '  provenance graph' + A.r + A.dim + '  (' + nodes.length + ' artifacts)' + A.r + '\n');
+    const seen = new Set();
+    const line = (n, prefix, connector) => {
+      const col = roleDot(n.produced_by || '');
+      const tag = n.passed === false ? A.red + ' ✗' + A.r : (n.passed === true ? A.green + ' ✓' + A.r : '');
+      const score = (n.score != null) ? A.dim + '  ' + (Math.round(n.score * 1000) / 1000) + A.r : '';
+      const by = n.produced_by ? A.dim + ' · ' + n.produced_by + A.r : '';
+      w('  ' + A.dim + prefix + connector + A.r + col + n.kind + A.r + A.dim + '#' + shortId(n.id) + A.r + by + score + tag + '\n');
+    };
+    const walk = (id, prefix, isLast, depth) => {
+      if (seen.has(id)) return; seen.add(id);
+      const n = byId[id]; if (!n) return;
+      line(n, prefix, depth === 0 ? '' : (isLast ? '└─ ' : '├─ '));
+      const kids = (kidsOf[id] || []).filter((k) => byId[k]);
+      const childPrefix = prefix + (depth === 0 ? '' : (isLast ? '   ' : '│  '));
+      kids.forEach((k, i) => walk(k, childPrefix, i === kids.length - 1, depth + 1));
+    };
+    roots.forEach((r, i) => walk(r.id, '', i === roots.length - 1, 0));
+    nodes.forEach((n) => { if (!seen.has(n.id)) line(n, '', ''); });   // orphans (parents off-window)
+  }
+
+  // /models: list models, marking the current one; falls back to the curated Codex list.
+  function renderModels(obj) {
+    const cur = obj.current || currentBrain || '';
+    w('\n' + A.b + '  models' + A.r + (obj.source ? A.dim + '  (' + obj.source + ')' + A.r : '') + '\n');
+    let list = Array.isArray(obj.available) ? obj.available : [];
+    if (obj.note) w('  ' + A.dim + obj.note + A.r + '\n');
+    if (!list.length && obj.source === 'error') { w('  ' + A.dim + 'curated fallback:' + A.r + '\n'); list = CODEX_MODELS; }
+    list.forEach((mid) => {
+      const isCur = cur && (cur === mid || cur.endsWith(':' + mid));
+      w('  ' + (isCur ? A.green + '● ' : A.dim + '· ') + A.r + (isCur ? A.green + mid + ' (current)' + A.r : mid) + '\n');
+    });
   }
 
   // backend (spawned after the brain is configured; can be restarted by /login)
@@ -240,7 +294,9 @@ function interactive(brain) {
   const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
   const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0,
-    pipeline: null, metric: null, activeRole: null, lastAction: '' };
+    pipeline: null, metric: null, budget: null, activeRole: null, lastAction: '' };
+  // session provenance graph, accumulated from `artifact` events for /graph
+  const sessionGraph = [];
   const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
   const shortId = (id) => String(id || '').slice(-6);
   const sparkline = (a) => {
@@ -289,26 +345,50 @@ function interactive(brain) {
       out.push(lb.str());
     }
 
-    // status row: active specialist · (metric | last action) · elapsed · tokens
+    // status row: active specialist · (metrics | last action) · elapsed · tokens
+    const m = hud.metric;
     const lb = lineBuilder(maxw); lb.add('  ');
     lb.addRaw('\x1b[35m' + spin + A.r, 1); lb.add(' ');
     const who = (hud.activeRole && hud.activeRole !== 'agent') ? hud.activeRole : 'working';
     lb.add(who, roleDot(hud.activeRole || ''));
-    if (hud.metric && hud.metric.total) {
-      lb.add(' · '); lb.add('step ' + hud.metric.step + '/' + hud.metric.total, A.white);
-      if (hud.metric.loss != null) {
-        lb.add(' · loss ' + hud.metric.loss, A.dim);
-        const sp = sparkline(hud.metric.hist);
-        if (sp) { lb.add(' '); lb.addRaw(A.cyan + sp + A.r, sp.length); }
-      }
-    } else if (hud.lastAction) {
-      lb.add(' · '); lb.add(hud.lastAction, A.dim);
+    if (m && m.step != null) {
+      lb.add(' · '); lb.add('step ' + m.step + (m.total ? '/' + m.total : ''), A.white);
     }
+    if (m && m.loss != null) {
+      lb.add(' · '); lb.add('loss ' + fmtNum(m.loss), A.dim);
+      const sp = sparkline(m.histLoss); if (sp) { lb.add(' '); lb.addRaw(A.cyan + sp + A.r, sp.length); }
+    }
+    if (m && m.reward != null) {
+      lb.add(' · '); lb.add('rwd ' + fmtNum(m.reward), A.dim);
+      const sp = sparkline(m.histReward); if (sp) { lb.add(' '); lb.addRaw(A.green + sp + A.r, sp.length); }
+    }
+    if (m && m.grad_norm != null) { lb.add(' · '); lb.add('grad ' + fmtNum(m.grad_norm), A.dim); }
+    if (!m && hud.lastAction) { lb.add(' · '); lb.add(hud.lastAction, A.dim); }
     lb.add(' · '); lb.add(el + 's', A.dim);
     if (hud.tokens) { lb.add(' · '); lb.add('↑' + fmtTok(hud.tokens) + ' tok', A.dim); }
     out.push(lb.str());
+
+    // guardrails row: the governor's safety envelope, with a live step gauge vs the step cap
+    if (hud.budget && maxw >= 40) {
+      const b = hud.budget;
+      const lb2 = lineBuilder(maxw); lb2.add('  ');
+      lb2.add('guardrails ', A.dim);
+      if (m && m.step != null && b.max_steps) {
+        const frac = Math.max(0, Math.min(1, m.step / b.max_steps));
+        const W = 10, fill = Math.round(frac * W);
+        const near = frac >= 0.85;
+        lb2.addRaw((near ? A.yellow : A.green) + '▰'.repeat(fill) + A.r + A.dim + '▱'.repeat(W - fill) + A.r, W);
+        lb2.add(' ' + m.step + '/' + b.max_steps + ' steps', near ? A.yellow : A.dim);
+      } else {
+        lb2.add('≤' + b.max_steps + ' steps', A.dim);
+      }
+      lb2.add('  ·  ', A.dim);
+      lb2.add('≤' + b.max_gpu_hours + ' GPU·h  ·  ≤$' + b.max_cost_usd + '  ·  ≤' + b.max_wall_clock_hours + 'h wall', A.dim);
+      out.push(lb2.str());
+    }
     return out;
   }
+  const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
 
   function hudDraw() {
     if (!busy || awaitingApproval) return;
@@ -355,6 +435,8 @@ function interactive(brain) {
 
   function showHelp() {
     w('\n' + A.b + '  commands' + A.r + '\n');
+    w('  ' + A.cyan + '/graph' + A.r + A.dim + '   show the provenance DAG of artifacts this session' + A.r + '\n');
+    w('  ' + A.cyan + '/models' + A.r + A.dim + '  list models the current brain can reach' + A.r + '\n');
     w('  ' + A.cyan + '/login' + A.r + A.dim + '   reconfigure or refresh your brain (OpenRouter key / Codex login)' + A.r + '\n');
     w('  ' + A.cyan + '/brain' + A.r + A.dim + '   show the brain in use' + A.r + '\n');
     w('  ' + A.cyan + '/help' + A.r + A.dim + '    this help' + A.r + '\n');
@@ -366,6 +448,9 @@ function interactive(brain) {
     if (c === '/login' || c === '/auth' || c === '/refresh') { relogin(); return; }
     if (c === '/quit' || c === '/exit') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); return; }
     if (c === '/brain') { w('  ' + A.dim + 'brain: ' + (currentBrain || '(default)') + A.r + '\n'); return prompt(); }
+    // backend commands: send and let the resulting events + `done` drive back to the prompt
+    if (c === '/graph') { send({ type: 'command', name: 'graph' }); return; }
+    if (c === '/models') { send({ type: 'command', name: 'models' }); return; }
     if (c === '/help' || c === '/?') { showHelp(); return prompt(); }
     w('  ' + A.dim + 'unknown command ' + cmd + ' — try /help' + A.r + '\n');
     return prompt();

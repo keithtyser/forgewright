@@ -34,4 +34,24 @@ assert.strictEqual(
   'brightGreen'
 );
 
+// metric/budget are live HUD-only -> no transcript lines
+assert.deepStrictEqual(only({ type: 'metric', loss: 0.3, step: 5 }), []);
+assert.deepStrictEqual(only({ type: 'budget', max_steps: 80 }), []);
+
+// graph renders a header + one line per node (root-to-leaf order preserved by caller)
+{
+  const out = only({ type: 'graph', nodes: [
+    { id: 'dataset-1-aaa111', kind: 'dataset', produced_by: 'DataCurator', parents: [] },
+    { id: 'eval-1-bbb222', kind: 'eval', produced_by: 'Evaluator', parents: ['adapter-1-ccc333'], score: 0.94, passed: true },
+  ] });
+  assert.strictEqual(out[0], 'provenance graph (2 artifacts)');
+  assert.ok(out[2].includes('eval#bbb222') && out[2].includes('← ccc333') && out[2].includes('0.94') && out[2].includes('✓'));
+}
+
+// models marks the current one
+{
+  const out = only({ type: 'models', available: ['gpt-5.5-codex', 'gpt-5'], current: 'oauth-codex:gpt-5', source: 'probe' });
+  assert.ok(out.some((l) => l.includes('gpt-5 (current)')));
+}
+
 console.log('render.test.js: all assertions passed');

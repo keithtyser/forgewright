@@ -105,6 +105,8 @@ In-chat slash commands:
 
 | command | what it does |
 |---|---|
+| `/graph` | draw the session's provenance DAG (dataset → adapter → model → eval), each node colored by its producer with its gate score |
+| `/models` | list the models the current brain can reach (Codex probes the live token; falls back to a curated list) |
 | `/login` | reconfigure or refresh your brain (new OpenRouter key / re-run Codex login); restarts the backend with the new credentials |
 | `/brain` | show the brain currently in use |
 | `/help` | list commands |
@@ -151,10 +153,12 @@ hardware. The full three-stage swarm (DataCurator, SFTTrainer, Evaluator) runs t
 Director with a single provenance chain and one role-tagged transcript. The terminal-kit
 Node TUI ships with a live **Swarm HUD**: while the swarm works, a panel hovers above the
 prompt showing the pipeline (each specialist's stage state), the active specialist, training
-step/loss with a sparkline, elapsed, and tokens; produced artifacts stream into the
-transcript as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`). Set
-`FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead. See `docs/` and the plan file
-for the slice breakdown.
+step/loss/reward with sparklines, a guardrails gauge (the governor's step/GPU-hour/cost/wall
+caps with a live step bar), elapsed, and tokens. Training telemetry is structured: the
+backend taps trainer output into typed `metric` events the HUD consumes directly. Produced
+artifacts stream into the transcript as lineage badges (`◇ eval#def456 ← adapter#xyz789
+score 0.94 ✓`), and `/graph` draws the full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1`
+for a minimal one-line status instead. See `docs/` and the plan file for the slice breakdown.
 
 ## Credits
 
