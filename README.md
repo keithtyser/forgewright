@@ -149,8 +149,12 @@ Linux Blackwell box; Forgewright orchestrates them locally or over SSH.
 The four core capabilities and the swarm backend are built and proven end to end on real
 hardware. The full three-stage swarm (DataCurator, SFTTrainer, Evaluator) runs through the
 Director with a single provenance chain and one role-tagged transcript. The terminal-kit
-Node TUI is the remaining frontend piece. See `docs/` and the plan file for the slice
-breakdown.
+Node TUI ships with a live **Swarm HUD**: while the swarm works, a panel hovers above the
+prompt showing the pipeline (each specialist's stage state), the active specialist, training
+step/loss with a sparkline, elapsed, and tokens; produced artifacts stream into the
+transcript as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`). Set
+`FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead. See `docs/` and the plan file
+for the slice breakdown.
 
 ## Credits
 

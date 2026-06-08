@@ -84,6 +84,24 @@ function formatEvent(obj) {
       if (body) out.push({ text: '    ' + body, color: 'gray' });
       return out;
     }
+    case 'pipeline': {
+      const stages = Array.isArray(obj.stages) ? obj.stages : [];
+      return [{ text: '◆ plan ' + stages.join(' → '), color: 'brightCyan' }];
+    }
+    case 'stage': {
+      if (obj.state === 'done') return [{ text: '✓ ' + obj.name + ' complete', color: 'green' }];
+      if (obj.state === 'failed') return [{ text: '✗ ' + obj.name + ' failed', color: 'red' }];
+      return [];   // 'active' is shown live in the HUD, not the transcript
+    }
+    case 'artifact': {
+      const par = Array.isArray(obj.parents) && obj.parents.length
+        ? ' ← ' + obj.parents.map((p) => String(p).slice(-6)).join(', ') : '';
+      const m = obj.metrics && typeof obj.metrics === 'object' ? obj.metrics : {};
+      const k = Object.keys(m).find((x) => typeof m[x] === 'number');
+      const met = k ? '  ' + k + ' ' + (Math.round(m[k] * 1000) / 1000) : '';
+      const tag = obj.passed === false ? ' ✗' : (obj.passed === true ? ' ✓' : '');
+      return [{ text: '◇ ' + obj.kind + '#' + String(obj.id || '').slice(-6) + par + met + tag, color: roleColor(role) }];
+    }
     case 'progress':
       return [{ text: '  ' + tag + clip(obj.text, 500), color: 'gray' }];
     case 'approval_request':

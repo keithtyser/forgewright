@@ -67,10 +67,13 @@ class Director:
         self.brain = brain
         self.host = host
 
-    def _emit(self, kind: str, **data) -> None:
+    def _emit(self, event_type: str, **data) -> None:
         if self.reporter:
             try:
-                self.reporter(kind, {**data, "role": self.role})
+                # an explicit role in `data` wins (e.g. artifact events colored by their
+                # producer), otherwise the event is attributed to the Director. Naming the
+                # positional `event_type` lets data carry its own `kind` (an artifact's kind).
+                self.reporter(event_type, {"role": self.role, **data})
             except Exception:  # noqa: BLE001
                 pass
 
@@ -82,11 +85,14 @@ class Director:
         current: list[Artifact] = list(seed_inputs or [])
         produced: list[Artifact] = []
         completed: list[tuple[Step, Artifact]] = []   # for saga compensation
-        self._emit("assistant", content=f"plan: {' -> '.join(s.specialist_cls.role for s in recipe)}")
+        stages = [s.specialist_cls.role for s in recipe]
+        total = len(recipe)
+        # the full pipeline up front, so the UI can render a live progress map of the swarm.
+        self._emit("pipeline", stages=stages, goal=goal)
 
-        for step in recipe:
+        for i, step in enumerate(recipe):
             role = step.specialist_cls.role
-            self._emit("assistant", content=f"dispatching {role}")
+            self._emit("stage", name=role, index=i, total=total, state="active")
             spec = step.specialist_cls(
                 registry=self.registry,
                 reporter=self._base_reporter,   # specialists self-label; one transcript
@@ -99,14 +105,23 @@ class Director:
             try:
                 art = spec.run(current, goal, **step.run_kwargs)
             except Exception as e:  # noqa: BLE001 - surface the failing stage, don't crash the chain
+                self._emit("stage", name=role, index=i, total=total, state="failed")
                 self._emit("tool", tool=role, ok=False, output=f"error: {e}")
                 self._compensate(completed)
                 return DirectorResult(False, produced, failed_at=role, reason=str(e))
             produced.append(art)
+            gate_metrics = art.gate.metrics if art.gate is not None else {}
+            gate_passed = art.gate.passed if art.gate is not None else None
+            self._emit(
+                "artifact", role=art.produced_by or role, kind=art.kind, id=art.id,
+                parents=list(art.parents), metrics=gate_metrics, passed=gate_passed,
+            )
             if art.gate is not None and not art.gate.passed:
+                self._emit("stage", name=role, index=i, total=total, state="failed")
                 self._emit("assistant", content=f"GLOBAL GATE halt at {role}: {art.gate.verdict}")
                 self._compensate(completed)   # roll back the steps that DID complete
                 return DirectorResult(False, produced, failed_at=role, reason=art.gate.verdict)
+            self._emit("stage", name=role, index=i, total=total, state="done")
             completed.append((step, art))
             current = [art]
 

@@ -66,6 +66,42 @@ def test_director_chains_and_records_lineage(tmp_path):
     assert {"Director", "SFTTrainer", "Evaluator"} <= roles
 
 
+def test_director_emits_structured_pipeline_events(tmp_path):
+    """The Director feeds the UI a live pipeline: a `pipeline` map up front, `stage`
+    transitions (active -> done), and an `artifact` per produced output."""
+    reg = Registry(tmp_path / "artifacts.jsonl")
+    ds = reg.register(DatasetArtifact(uri="d.jsonl"))
+    events = []
+    director = Director(registry=reg, reporter=lambda k, d: events.append((k, d)))
+    director.run_recipe("uplift", [Step(FakeSFT), Step(FakeEval)], seed_inputs=[ds])
+
+    kinds = [k for k, _ in events]
+    assert "pipeline" in kinds and kinds.count("stage") == 4 and kinds.count("artifact") == 2
+
+    pipe = next(d for k, d in events if k == "pipeline")
+    assert pipe["stages"] == ["SFTTrainer", "Evaluator"]
+
+    stages = [d for k, d in events if k == "stage"]
+    assert stages[0] == {"role": "Director", "name": "SFTTrainer", "index": 0, "total": 2, "state": "active"}
+    assert any(s["name"] == "SFTTrainer" and s["state"] == "done" for s in stages)
+
+    # artifacts are attributed to their producer (for per-role coloring), with lineage
+    arts = [d for k, d in events if k == "artifact"]
+    assert arts[0]["role"] == "SFTTrainer" and arts[0]["kind"] == "adapter"
+    assert arts[1]["kind"] == "eval" and arts[1]["parents"]
+
+
+def test_director_marks_failed_stage(tmp_path):
+    reg = Registry(tmp_path / "artifacts.jsonl")
+    ds = reg.register(DatasetArtifact(uri="d.jsonl"))
+    events = []
+    director = Director(registry=reg, reporter=lambda k, d: events.append((k, d)))
+    director.run_recipe("x", [Step(FakeSFT), Step(FakeEval, init_kwargs={"verdict_pass": False})],
+                        seed_inputs=[ds])
+    stages = [d for k, d in events if k == "stage"]
+    assert any(s["name"] == "Evaluator" and s["state"] == "failed" for s in stages)
+
+
 def test_director_halts_on_global_gate_failure(tmp_path):
     reg = Registry(tmp_path / "artifacts.jsonl")
     ds = reg.register(DatasetArtifact(uri="d.jsonl"))
