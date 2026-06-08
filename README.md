@@ -112,7 +112,15 @@ In-chat slash commands:
 | `/help` | list commands |
 | `/quit` | exit (or Ctrl-C) |
 
-Approvals use a vertical menu: **up/down to choose, enter to confirm**.
+Approvals use a vertical menu: **up/down to choose, enter to confirm** (approve once / approve
+all of this tool / YOLO bypass-all / deny).
+
+The agent can also **configure your environment** to unblock work -- install or upgrade
+packages, drivers, and dependencies (pip/uv/conda/apt, CUDA, docker) via the `configure_env`
+tool. These are system-modifying, so they carry a `system` risk tier and are approval-gated:
+you see the exact command and where it runs (local / a host / the container) before anything
+changes. The agent prefers the least-invasive scoped change and retries the blocked step after
+a fix, rather than giving up.
 
 ### Brains
 

@@ -25,6 +25,7 @@ DEFAULT_RULES: dict[Risk, Mode] = {
     "read": "allow",
     "write": "allow",
     "exec": "ask",          # bash, forge, launch_job, run_recipe, serving_opt -> ask
+    "system": "ask",        # configure_env: install/upgrade packages, drivers, deps -> ask
     "destructive": "ask",   # publish, deletes -> ask
 }
 

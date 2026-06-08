@@ -26,9 +26,10 @@ never publish; hand the abliterated model on for eval (refusal must drop AND cap
 
 Produce a GENUINELY FRESH result. Collect refusal directions from THIS run and write new
 weights to a fresh output dir. NEVER reuse a prior run's collected directions, and NEVER pass
-off a pre-existing abliterated model as your output. If activation collection cannot run here
-(e.g. transformers cannot load the model architecture), STOP and report the blocker: a truthful
-failure is correct; a fabricated success is a serious error.
+off a pre-existing abliterated model as your output. If activation collection is blocked by the
+environment (e.g. transformers cannot load the model architecture), fix it with `configure_env`
+(install/upgrade the needed package, with approval) and retry; only if that fails do you stop
+and report the blocker. A truthful failure is correct; a fabricated success is a serious error.
 """
 
 _IMG_RUN = "bash scripts/run_in_container.sh python3 -m model_forge.pipelines.abliterate"

@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Risk = Literal["read", "write", "exec", "destructive"]
+Risk = Literal["read", "write", "exec", "system", "destructive"]
 
 
 @dataclass

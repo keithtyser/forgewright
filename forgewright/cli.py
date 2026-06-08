@@ -45,6 +45,7 @@ from forgewright.tools.jobs import (
 )
 from forgewright.tools.shell import ShellTool
 from forgewright.tools.ssh import SSHTool
+from forgewright.tools.sysconfig import EnvConfigTool
 
 cli = typer.Typer(add_completion=False, help="Forgewright — autonomous post-training harness.")
 console = Console()
@@ -83,6 +84,7 @@ def build_registry() -> ToolRegistry:
         [
             ShellTool(),
             SSHTool(),
+            EnvConfigTool(forge),
             ReadFileTool(),
             WriteFileTool(),
             EditFileTool(),
