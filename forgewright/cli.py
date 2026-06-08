@@ -49,6 +49,18 @@ cli = typer.Typer(add_completion=False, help="Forgewright — autonomous post-tr
 console = Console()
 
 
+def _resolve_provider(brain: Optional[str], settings: Settings):
+    """Pick the brain: explicit --brain wins; else fall back to OpenRouter when its key is set
+    (so `forgewright` just starts with no flags); else the configured default provider."""
+    import os as _os
+
+    if brain:
+        return parse_brain_arg(brain)
+    if _os.environ.get("OPENROUTER_API_KEY"):
+        return parse_brain_arg("openrouter:deepseek/deepseek-v4-pro")
+    return settings.provider()
+
+
 def _bind_swarm(agent, reporter, permissions) -> None:
     """Give the run_recipe tool this turn's transcript reporter + approval policy, so the
     Director swarm it dispatches streams into the one chat and its approvals surface here."""
@@ -99,7 +111,7 @@ def run(
 ) -> None:
     """Run an autonomous post-training goal."""
     settings = Settings.load(config)
-    provider = parse_brain_arg(brain) if brain else settings.provider()
+    provider = _resolve_provider(brain, settings)
     targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
 
     def ask(tool, args) -> bool:  # console approver for destructive ops
@@ -166,7 +178,7 @@ def interactive(
 ) -> None:
     """Interactive Forgewright session (the default). Chat with the agent across turns."""
     settings = Settings.load(config)
-    provider = parse_brain_arg(brain) if brain else settings.provider()
+    provider = _resolve_provider(brain, settings)
     targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
 
     def ask(tool, args) -> bool:
@@ -233,7 +245,7 @@ def serve(
     from forgewright.frontend.server import serve_stdio
 
     settings = Settings.load(config)
-    provider = parse_brain_arg(brain) if brain else settings.provider()
+    provider = _resolve_provider(brain, settings)
     run_id = time.strftime("serve-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     ledger = Ledger(run_id, settings.ledger_dir)
     agent = Agent(

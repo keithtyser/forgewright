@@ -32,9 +32,19 @@ function interactive(brain) {
   const { spawn } = require('child_process');
   const term = require('terminal-kit').terminal;
 
-  const args = ['serve'];
+  // spawn the Python backend via the module (no command-name clash with this `forgewright` TUI).
+  // Point FORGEWRIGHT_PYTHON at your forgewright venv python if it is not the default python3.
+  const python = process.env.FORGEWRIGHT_PYTHON || 'python3';
+  const args = ['-m', 'forgewright', 'serve'];
   if (brain) args.push('--brain', brain);
-  const child = spawn('forgewright', args, { stdio: ['pipe', 'pipe', 'inherit'], shell: process.platform === 'win32' });
+  const child = spawn(python, args, { stdio: ['pipe', 'pipe', 'inherit'], shell: process.platform === 'win32' });
+  child.on('error', (e) => {
+    process.stderr.write(
+      'forgewright: could not start the Python backend (' + python + ' -m forgewright serve): ' + e.message + '\n' +
+      'Install it (pip install -e .) and/or set FORGEWRIGHT_PYTHON to your venv python, e.g.\n' +
+      '  export FORGEWRIGHT_PYTHON=~/projects/forgewright/.venv/bin/python\n');
+    process.exit(1);
+  });
 
   let busy = false;
   let awaitingApproval = false;
