@@ -17,6 +17,7 @@ from forgewright.agents.abliterator import Abliterator
 from forgewright.agents.data_curator import DataCurator
 from forgewright.agents.director import Step
 from forgewright.agents.evaluator import Evaluator
+from forgewright.agents.merger import Merger
 from forgewright.agents.publisher import Publisher
 from forgewright.agents.quantizer import Quantizer
 from forgewright.agents.rl_trainer import RLTrainer
@@ -26,7 +27,7 @@ from forgewright.contracts import DatasetArtifact, ModelArtifact
 
 # The roster, keyed by role, kept in sync with the specialist classes' typed contracts.
 SPECIALISTS = {
-    c.role: c for c in (DataCurator, SFTTrainer, RLTrainer, Abliterator, Quantizer,
+    c.role: c for c in (DataCurator, SFTTrainer, RLTrainer, Merger, Abliterator, Quantizer,
                         ServingOptimizer, Evaluator, Publisher)
 }
 
@@ -36,6 +37,7 @@ _RUN_KWARGS = {
     "DataCurator": ("mode", "seed_paths", "family", "source", "run_name", "holdout"),
     "SFTTrainer": ("max_steps",),
     "RLTrainer": ("max_steps",),
+    "Merger": (),
     "Abliterator": ("strength",),
     "Quantizer": ("source_variant", "method", "supported_quant"),
     "ServingOptimizer": ("objective",),

@@ -27,7 +27,7 @@ def _resolve(recipe: str, params: dict, registry: Registry):
     Recipes that start from a model/dataset get a seed artifact built from params
     (model_uri / dataset_uri) or pulled from the registry (latest of that kind)."""
     p = dict(params)
-    if recipe in ("uplift", "uplift_publish"):
+    if recipe in ("uplift", "uplift_publish", "full"):
         p.setdefault("seed_paths", [p.pop("seed_path")] if p.get("seed_path") else [])
         return build_recipe(recipe, **p)
     if recipe == "task_grpo":

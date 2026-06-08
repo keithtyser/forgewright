@@ -12,6 +12,7 @@ from forgewright.agents.abliterator import Abliterator
 from forgewright.agents.data_curator import DataCurator
 from forgewright.agents.director import Step
 from forgewright.agents.evaluator import Evaluator
+from forgewright.agents.merger import Merger
 from forgewright.agents.publisher import Publisher
 from forgewright.agents.quantizer import Quantizer
 from forgewright.agents.rl_trainer import RLTrainer
@@ -63,6 +64,25 @@ def abliterate(*, model: ModelArtifact, strength: float = 3.0) -> tuple[list[Ste
     return [Step(Abliterator, run_kwargs={"strength": strength})], [model]
 
 
+def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
+         strength: float = 3.0, max_steps: int = 60) -> tuple[list[Step], list[Artifact]]:
+    """The full pipeline in one run, gated after every transform so a regression can't flow
+    downstream: curate -> SFT -> EVAL -> merge -> abliterate -> EVAL -> quantize -> EVAL ->
+    serving-opt. (Merge bridges the adapter->model gap; ServingOptimizer self-gates quality.)"""
+    return [
+        Step(DataCurator, run_kwargs={"mode": "curate_seed", "seed_paths": list(seed_paths),
+             "family": family, "source": source, "run_name": f"{family}_uplift", "holdout": holdout}),
+        Step(SFTTrainer, run_kwargs={"max_steps": max_steps}),
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # uplift quality
+        Step(Merger),
+        Step(Abliterator, run_kwargs={"strength": strength}),
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # refusal drop + capability hold
+        Step(Quantizer),
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # quant quality retention
+        Step(ServingOptimizer, run_kwargs={"objective": "latency"}, compensate=_stop_served_endpoint),
+    ], []
+
+
 def _stop_served_endpoint(art: Artifact) -> None:
     """Saga compensation: tear down a served endpoint if a later step fails."""
     import subprocess
@@ -77,6 +97,7 @@ RECIPES: dict[str, Callable[..., tuple[list[Step], list[Artifact]]]] = {
     "uplift_publish": uplift_publish,
     "quantize_serve": quantize_serve,
     "abliterate": abliterate,
+    "full": full,
 }
 
 
@@ -91,7 +112,14 @@ def plan_recipe_name(goal: str) -> str:
     user didn't name a recipe. Maps intent keywords to the canonical pipelines."""
     g = (goal or "").lower()
     publishing = "publish" in g or "release" in g or "upload" in g
-    if any(k in g for k in ("abliterate", "uncensor", "uncensored", "refus", "jailbreak", "decensor")):
+    trains = any(k in g for k in ("fine-tune", "finetune", "fine tune", "uplift", "sft", "distil", "train"))
+    abliterates = any(k in g for k in ("abliterate", "uncensor", "uncensored", "refus", "jailbreak", "decensor"))
+    quantizes = any(k in g for k in ("quantize", "quantization", "nvfp4", "fp8", "int8", "awq", "compress"))
+    # a full pipeline: training plus a model transform, or explicitly "everything/end to end"
+    if any(k in g for k in ("full pipeline", "everything", "end to end", "end-to-end", "whole pipeline")) \
+            or (trains and (abliterates or quantizes)):
+        return "full"
+    if abliterates:
         return "abliterate"
     if any(k in g for k in ("grpo", "rlvr", "reinforcement", "reward", "verifiable", " rl ")):
         return "task_grpo"
