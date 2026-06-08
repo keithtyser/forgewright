@@ -118,6 +118,43 @@ How you work:
 """
 
 
+_SUMMARY_SYSTEM = (
+    "You compact the earlier part of an autonomous post-training agent's session into a running "
+    "summary so it keeps continuity across a long run. MERGE the new messages into the prior "
+    "summary (do not restart it). PRESERVE: the goal, key decisions, what was done, artifact ids "
+    "and on-disk paths, gate results (pass/fail + scores), the chosen hyperparameters/methods, and "
+    "any unresolved errors or blockers. DISCARD redundant tool output and chit-chat. Be terse and "
+    "factual; <= 400 words; no preamble."
+)
+
+
+def _render_for_summary(messages: list[dict], limit: int = 800) -> str:
+    """Compact the to-be-folded messages into text for the summarizer prompt."""
+    lines = []
+    for m in messages:
+        role = m.get("role", "?")
+        content = (m.get("content") or "").replace("\n", " ").strip()
+        calls = ", ".join(c.get("function", {}).get("name", "") for c in m.get("tool_calls", []) or [])
+        if calls:
+            content = (content + f" [calls: {calls}]").strip()
+        if content:
+            lines.append(f"{role}: {content[:limit]}")
+    return "\n".join(lines)
+
+
+def _make_summarizer(brain):
+    """A summarizer for the ContextManager: fold messages into the prior summary via the brain."""
+    def summarize(messages, prev_summary):
+        user = (f"Prior summary:\n{prev_summary or '(none)'}\n\n"
+                f"New messages to fold in:\n{_render_for_summary(messages)}")
+        turn = brain.chat([
+            {"role": "system", "content": _SUMMARY_SYSTEM},
+            {"role": "user", "content": user},
+        ])
+        return (getattr(turn, "content", "") or "").strip()
+    return summarize
+
+
 @dataclass
 class LoopResult:
     done: bool
@@ -148,6 +185,13 @@ class Agent:
         self.reporter = reporter
         # cooperative interrupt: checked between steps so the user can stop a run mid-flight
         self.interrupt = interrupt
+        # make compaction model-aware (budget from the brain's context window) + give it a
+        # summarizer so long runs condense instead of dropping context.
+        try:
+            model = getattr(brain, "provider", None) and brain.provider.litellm_model()
+            self.ctx.configure(model=model or None, summarizer=_make_summarizer(brain))
+        except Exception:  # noqa: BLE001 - never block construction on context wiring
+            pass
 
     def _log(self, kind: str, **data: object) -> None:
         if self.ledger:
@@ -162,6 +206,7 @@ class Agent:
 
     def run(self, goal: str) -> LoopResult:
         """Run one user turn to completion (reuses the persistent context across calls)."""
+        self.ctx.set_pinned(f"Goal: {goal}")   # the goal survives any compaction
         self.ctx.add_user(goal)
         self._log("goal", goal=goal)
         recent: list[str] = []
