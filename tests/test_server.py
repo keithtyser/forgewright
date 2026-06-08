@@ -74,6 +74,24 @@ def test_serve_stdio_streams_turn_and_approval():
     assert pub["ok"] is True
 
 
+def test_serve_stdio_interrupt_sets_event_before_turn():
+    """An `interrupt` line sets the shared event (out-of-band) before the queued turn runs."""
+    import threading
+
+    ev = threading.Event()
+    instream = io.StringIO(
+        json.dumps({"type": "interrupt"}) + "\n"
+        + json.dumps({"type": "user_msg", "text": "go"}) + "\n"
+    )
+    seen = {}
+
+    def handle(text, reporter, permissions):
+        seen["interrupted"] = ev.is_set()
+
+    serve_stdio(handle, instream=instream, outstream=io.StringIO(), interrupt_event=ev)
+    assert seen["interrupted"] is True
+
+
 def test_serve_stdio_records_full_transcript(tmp_path):
     """The session transcript captures meta + every inbound message + every outbound event."""
     instream = io.StringIO(json.dumps({"type": "user_msg", "text": "hi"}) + "\n")

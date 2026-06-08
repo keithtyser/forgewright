@@ -93,6 +93,18 @@ def test_unbounded_steps_runs_until_goal_met():
     assert res.done is True and res.final == "done" and res.steps == 7
 
 
+def test_interrupt_stops_run_between_steps():
+    turns = [AssistantTurn("", [ToolCall(str(i), "echo_tool", {"text": str(i)})]) for i in range(10)]
+    calls = {"n": 0}
+
+    def interrupt():
+        calls["n"] += 1
+        return calls["n"] > 2          # allow two steps, then interrupt
+
+    res = Agent(FakeBrain(turns), ToolRegistry([EchoTool()]), max_steps=0, interrupt=interrupt).run("go")
+    assert res.done is False and res.final == "interrupted" and res.steps == 2
+
+
 def test_doom_loop_guard():
     same = lambda: AssistantTurn("", [ToolCall("x", "echo_tool", {"text": "loop"})])
     turns = [same(), same(), same(), same(), AssistantTurn("stopped")]

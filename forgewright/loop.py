@@ -132,6 +132,7 @@ class Agent:
         max_steps: int = 80,
         system_prompt: str = SYSTEM_PROMPT,
         reporter: Optional[Callable[[str, dict], object]] = None,
+        interrupt: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.brain = brain
         self.tools = tools
@@ -140,6 +141,8 @@ class Agent:
         self.ctx = context or ContextManager(system_prompt=system_prompt)
         self.max_steps = max_steps
         self.reporter = reporter
+        # cooperative interrupt: checked between steps so the user can stop a run mid-flight
+        self.interrupt = interrupt
 
     def _log(self, kind: str, **data: object) -> None:
         if self.ledger:
@@ -162,6 +165,9 @@ class Agent:
         # doom-loop guard (identical call repeated 3x) is the safety net against dead loops.
         step = 0
         while self.max_steps <= 0 or step < self.max_steps:
+            if self.interrupt and self.interrupt():
+                self._emit("assistant", {"step": step, "content": "(interrupted)", "tool_calls": []})
+                return LoopResult(False, step, "interrupted")
             step += 1
             turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
             self.ctx.add_assistant(turn)

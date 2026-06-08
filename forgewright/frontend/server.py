@@ -111,7 +111,7 @@ def _make_recorder(record_path):
 
 def serve_stdio(
     handle_turn: HandleTurn, *, instream, outstream, handle_command: Optional[HandleCommand] = None,
-    record_path=None, session_meta: Optional[dict] = None,
+    record_path=None, session_meta: Optional[dict] = None, interrupt_event=None,
 ) -> None:
     """Blocking serve loop over two text streams (stdin/stdout in production). A reader
     thread routes incoming lines; the main loop runs turns with a stream-backed approver,
@@ -148,6 +148,10 @@ def serve_stdio(
             except json.JSONDecodeError:
                 continue
             record("in", msg)
+            if msg.get("type") == "interrupt":
+                if interrupt_event is not None:
+                    interrupt_event.set()   # out-of-band: stop the running turn between steps
+                continue
             route(msg, msg_q, approval_q)
         msg_q.put(None)  # stream closed -> end the session
 

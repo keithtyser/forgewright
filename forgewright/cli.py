@@ -256,12 +256,15 @@ def serve(
     Reads user_msg / approval_response lines; streams assistant / tool / approval_request /
     done events back. One persistent agent across turns; approvals surface to the frontend.
     """
+    import threading
+
     from forgewright.frontend.server import serve_stdio
 
     settings = Settings.load(config)
     provider = _resolve_provider(brain, settings)
     run_id = time.strftime("serve-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     ledger = Ledger(run_id, settings.ledger_dir)
+    interrupt_ev = threading.Event()   # set by an `interrupt` message; checked between agent steps
     agent = Agent(
         brain=Brain(provider),
         tools=build_registry(),
@@ -269,10 +272,12 @@ def serve(
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
         max_steps=max_steps,
+        interrupt=interrupt_ev.is_set,
     )
 
     def handle_turn(text: str, reporter, permissions) -> None:
         # reuse the one agent (persistent context); bind this turn's reporter + approver
+        interrupt_ev.clear()   # a fresh turn starts uninterrupted
         agent.reporter = reporter
         agent.permissions = permissions
         _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
@@ -294,7 +299,7 @@ def serve(
     }
     serve_stdio(
         handle_turn, instream=sys.stdin, outstream=sys.stdout, handle_command=handle_command,
-        record_path=transcript, session_meta=session_meta,
+        record_path=transcript, session_meta=session_meta, interrupt_event=interrupt_ev,
     )
 
 

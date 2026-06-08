@@ -110,6 +110,10 @@ In-chat slash commands:
 | `/help` | list commands |
 | `/quit` | exit (or Ctrl-C) |
 
+The input box never disappears: you can **type to the agent while it works** (a message sent
+mid-run is queued and picked up after the current turn). **Ctrl-C once interrupts** the running
+turn (cooperatively, between steps); **Ctrl-C twice** quits the TUI.
+
 Approvals use a vertical menu: **up/down to choose, enter to confirm** (approve once / approve
 all of this tool / YOLO bypass-all / deny).
 

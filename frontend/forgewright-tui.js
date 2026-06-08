@@ -369,76 +369,114 @@ function interactive(brain) {
   }
   const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
 
-  // The HUD updates IN PLACE to avoid flicker: the per-frame animation overwrites each line
-  // with `\x1b[2K` (clear-line) at its fixed position. It never uses `\x1b[J` (erase-below),
-  // which blanks the whole block each frame and is what caused the flicker. Invariant: after
-  // any draw, the cursor sits at the END of the last HUD line (no trailing newline).
-  function curLines() {
-    if (!PLAIN) return hudLines();
-    return ['', A.dim + GLYPHS[hud.i % GLYPHS.length] + ' working… (' +
-      Math.round((Date.now() - hud.start) / 1000) + 's' +
-      (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r];
-  }
-  function hudDraw() {                       // fresh draw at the current cursor position
-    if (!busy || awaitingApproval) return;
-    const lines = curLines();
-    w(lines.join('\n'));                     // no trailing newline -> cursor at end of last line
-    hud.prevLines = lines.length;
-  }
-  function hudRedraw() {                     // in-place overwrite (the animation path; no flicker)
-    if (!busy || awaitingApproval) return;
-    if (hud.prevLines === 0) return hudDraw();
-    const lines = curLines();
-    if (lines.length !== hud.prevLines) { hudClear(); return hudDraw(); }  // structure changed
-    let s = '\r' + (hud.prevLines > 1 ? '\x1b[' + (hud.prevLines - 1) + 'A' : '');  // to block top
-    for (let i = 0; i < lines.length; i++) s += '\x1b[2K' + lines[i] + (i < lines.length - 1 ? '\n\r' : '');
-    w(s);                                    // cursor back at end of last line
-    hud.prevLines = lines.length;
-  }
-  function hudClear() {                      // erase the block; leave cursor at its top (col 0)
-    if (hud.prevLines <= 0) return;
-    let s = '\r\x1b[2K';
-    for (let i = 1; i < hud.prevLines; i++) s += '\x1b[1A\x1b[2K';
-    w(s);
-    hud.prevLines = 0;
-  }
   function hudResetTurn() {
     hud.start = Date.now(); hud.i = 0; hud.tokens = 0;
     hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = '';
   }
-  function startStatus() {
-    if (!hud.start) hud.start = Date.now();
-    if (hud.timer) return;
-    hudDraw();
-    hud.timer = setInterval(() => { hud.i++; hudRedraw(); }, 140);
-  }
-  function stopStatus() {
-    if (hud.timer) { clearInterval(hud.timer); hud.timer = null; }
-    hudClear();
-  }
 
-  // A bordered input box (top rule with a right-aligned brain label, the ❯ line, bottom rule),
-  // like Claude Code. We draw all three lines, then move the cursor back up into the box so
-  // inputField edits inside it; on submit we drop below the box so the reply renders under it.
+  // ---- the persistent footer: optional HUD lines (when busy) + an always-present input box.
+  //      It never disappears, so you can type to the agent (or interrupt it) at any moment. The
+  //      footer redraws in place (clear-line per row, never erase-below) so it does not flicker.
+  //      Invariant: after every render the cursor rests in the input line at the end of your text.
+  let inputBuf = '';
+  let footerN = 0;       // footer line count currently on screen
+  let inMenu = false;    // a terminal-kit modal (approval menu / wizard) owns the keys + screen
+  let lastCtrlC = 0;
+
   function boxTop(width, label) {
     if (!label) return '─'.repeat(Math.max(0, width));
     const tail = ' ' + label + ' ──';
     return tail.length >= width ? '─'.repeat(Math.max(0, width)) : '─'.repeat(width - tail.length) + tail;
   }
-  function prompt() {
-    if (busy || awaitingApproval) return;
+  function displayBuf() {                  // tail-clip a long line so the box never wraps
+    const max = Math.max(8, (term.width || 80) - 4);
+    return inputBuf.length > max ? '…' + inputBuf.slice(inputBuf.length - max + 1) : inputBuf;
+  }
+  function footerLines() {
     const width = term.width || 80;
-    w('\n' + A.dim + boxTop(width, currentBrain || '') + A.r + '\n');   // top rule (+ brain label)
-    w(A.green + A.b + '❯ ' + A.r);                                       // input line
-    w('\n' + A.dim + '─'.repeat(width) + A.r);                          // bottom rule
-    w('\x1b[1A\r\x1b[2C');                                              // up into the box, past "❯ "
-    term.inputField({ cancelable: true }, (err, input) => {
-      w('\r\n\n');                                                      // drop below the box
-      const t = (input || '').trim();
-      if (!t) return prompt();
-      if (t[0] === '/') return handleSlash(t);
-      busy = true; send({ type: 'user_msg', text: t }); hudResetTurn(); startStatus();
-    });
+    let head = [];
+    if (busy) {
+      head = PLAIN
+        ? ['', A.dim + GLYPHS[hud.i % GLYPHS.length] + ' working… (' +
+           Math.round((Date.now() - hud.start) / 1000) + 's' +
+           (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r]
+        : hudLines();
+    }
+    head.push(A.dim + boxTop(width, currentBrain || '') + A.r);
+    head.push(A.green + A.b + '❯ ' + A.r + displayBuf());
+    head.push(A.dim + '─'.repeat(width) + A.r);
+    return head;
+  }
+  function positionCaret() {               // from end of bottom rule -> into the input line
+    const col = 2 + displayBuf().length;
+    w('\r\x1b[1A\r' + (col > 0 ? '\x1b[' + col + 'C' : ''));
+  }
+  function clearFooter() {                 // erase footer; leave cursor at its top (col 0)
+    if (footerN === 0) return;
+    w('\r');
+    if (footerN - 2 > 0) w('\x1b[' + (footerN - 2) + 'A');   // input line -> top
+    let s = '\x1b[2K';
+    for (let i = 1; i < footerN; i++) s += '\n\r\x1b[2K';
+    s += '\x1b[' + (footerN - 1) + 'A';
+    w(s);
+    footerN = 0;
+  }
+  function renderFooter() {
+    if (inMenu) return;
+    const lines = footerLines();
+    if (footerN !== 0 && lines.length !== footerN) clearFooter();    // structure changed -> fresh
+    if (footerN === 0) {
+      w(lines.join('\n'));
+    } else {
+      w('\r'); if (footerN - 2 > 0) w('\x1b[' + (footerN - 2) + 'A');
+      let s = '';
+      for (let i = 0; i < lines.length; i++) s += '\x1b[2K' + lines[i] + (i < lines.length - 1 ? '\n\r' : '');
+      w(s);
+    }
+    footerN = lines.length;
+    positionCaret();
+  }
+  // print a block of transcript output, keeping the footer below it
+  function transcript(fn) { clearFooter(); fn(); renderFooter(); }
+  function startStatus() {
+    if (!hud.start) hud.start = Date.now();
+    if (hud.timer) return;
+    hud.timer = setInterval(() => { hud.i++; if (busy && !inMenu && !awaitingApproval) renderFooter(); }, 140);
+  }
+  function stopStatus() { if (hud.timer) { clearInterval(hud.timer); hud.timer = null; } }
+
+  // ---- keyboard input + interrupt ----------------------------------------------------
+  function onKey(name, matches, data) {
+    if (inMenu || awaitingApproval) return;        // a modal owns the keys
+    if (name === 'CTRL_C') return onCtrlC();
+    if (name === 'ENTER') return submitInput();
+    if (name === 'BACKSPACE') { if (inputBuf) { inputBuf = inputBuf.slice(0, -1); renderFooter(); } return; }
+    if (name === 'CTRL_U') { if (inputBuf) { inputBuf = ''; renderFooter(); } return; }
+    if (data && data.isCharacter) { inputBuf += name; renderFooter(); }
+  }
+  function onCtrlC() {
+    const now = Date.now();
+    if (now - lastCtrlC < 2000) {                  // second press within 2s -> quit
+      try { send({ type: 'shutdown' }); } catch (e) {}
+      try { child && child.stdin.end(); } catch (e) {}
+      return term.processExit(0);
+    }
+    lastCtrlC = now;
+    if (busy) { send({ type: 'interrupt' }); transcript(() => w('\n' + A.yellow + '  ⎿ interrupting… (Ctrl-C again to quit)' + A.r + '\n')); }
+    else transcript(() => w('\n' + A.dim + '  (Ctrl-C again to quit)' + A.r + '\n'));
+  }
+  function submitInput() {
+    const t = inputBuf.trim(); inputBuf = '';
+    if (!t) { renderFooter(); return; }
+    if (t[0] === '/') { transcript(() => w('\n' + A.green + A.b + '❯ ' + A.r + t + '\n')); return handleSlashCmd(t); }
+    const wasBusy = busy;
+    if (!wasBusy) { busy = true; hudResetTurn(); }
+    send({ type: 'user_msg', text: t });
+    clearFooter();
+    w('\n' + A.green + A.b + '❯ ' + A.r + t + '\n');
+    if (wasBusy) w('  ' + A.dim + '↳ queued — runs after the current turn' + A.r + '\n');
+    renderFooter();
+    if (!wasBusy) startStatus();
   }
 
   function showHelp() {
@@ -451,24 +489,28 @@ function interactive(brain) {
     w('  ' + A.cyan + '/quit' + A.r + A.dim + '    exit (or Ctrl-C)' + A.r + '\n');
   }
 
-  function handleSlash(cmd) {
+  function handleSlashCmd(cmd) {
     const c = cmd.toLowerCase();
-    if (c === '/login' || c === '/auth' || c === '/refresh') { relogin(); return; }
-    if (c === '/quit' || c === '/exit') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); return; }
-    if (c === '/brain') { w('  ' + A.dim + 'brain: ' + (currentBrain || '(default)') + A.r + '\n'); return prompt(); }
-    // backend commands: send and let the resulting events + `done` drive back to the prompt
-    if (c === '/graph') { send({ type: 'command', name: 'graph' }); return; }
-    if (c === '/models') { send({ type: 'command', name: 'models' }); return; }
-    if (c === '/help' || c === '/?') { showHelp(); return prompt(); }
-    w('  ' + A.dim + 'unknown command ' + cmd + ' — try /help' + A.r + '\n');
-    return prompt();
+    if (c === '/login' || c === '/auth' || c === '/refresh') return relogin();
+    if (c === '/quit' || c === '/exit') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} return term.processExit(0); }
+    if (c === '/brain') return transcript(() => w('  ' + A.dim + 'brain: ' + (currentBrain || '(default)') + A.r + '\n'));
+    if (c === '/help' || c === '/?') return transcript(showHelp);
+    if (c === '/graph' || c === '/models') {     // backend commands; results arrive as events
+      const wasBusy = busy; if (!wasBusy) { busy = true; hudResetTurn(); }
+      send({ type: 'command', name: c.slice(1) });
+      renderFooter(); if (!wasBusy) startStatus();
+      return;
+    }
+    transcript(() => w('  ' + A.dim + 'unknown command ' + cmd + ' — try /help' + A.r + '\n'));
   }
 
   // Re-run the setup wizard, then restart the backend with the new credentials so a fresh
   // API key / Codex login takes effect without leaving the app.
   async function relogin() {
+    inMenu = true; stopStatus(); clearFooter();   // hand the screen to the wizard's menus
     const cfg = await setupWizard(term);
-    if (!cfg) return prompt();
+    inMenu = false;
+    if (!cfg) { renderFooter(); return; }
     restarting = true;
     try { rl.close(); } catch (e) {}
     const old = child;
@@ -478,13 +520,11 @@ function interactive(brain) {
   }
 
   function handleApproval(obj) {
-    awaitingApproval = true; stopStatus();
+    awaitingApproval = true; stopStatus(); clearFooter();
     w('\n' + A.yellow + '─── approval needed ' + '─'.repeat(Math.max(0, ((term.width || 80) - 22))) + A.r + '\n');
     w('  ' + A.yellow + A.b + '⚠ ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
     if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + clip(JSON.stringify(obj.args), 200) + A.r + '\n');
     w('  ' + A.dim + '↑/↓ to choose · enter to confirm' + A.r + '\n');
-    // singleColumnMenu navigates with UP/DOWN + ENTER (singleLineMenu used left/right, which
-    // is what tripped people up). Vertical also matches Claude Code's approval prompt.
     const items = ['approve once', 'approve all ' + (obj.tool || ''), 'YOLO: bypass all permissions', 'deny'];
     const decisions = ['yes', 'all', 'yolo', 'no'];
     term.singleColumnMenu(items, {
@@ -494,6 +534,7 @@ function interactive(brain) {
       w('\n');
       send({ type: 'approval_response', decision: decisions[(resp && resp.selectedIndex != null) ? resp.selectedIndex : 3] });
       awaitingApproval = false;
+      renderFooter();
       if (busy) startStatus();
     });
   }
@@ -502,30 +543,27 @@ function interactive(brain) {
     line = line.trim(); if (!line) return;
     let obj; try { obj = JSON.parse(line); } catch (e) { return; }
     if (obj.type === 'approval_request') { handleApproval(obj); return; }
-    if (obj.type === 'done') busy = false;     // before render so the spinner does not restart
-    stopStatus();
+    if (obj.type === 'done') busy = false;
+    clearFooter();
     renderEvent(obj);
-    // restart the spinner only if more work is coming (a tool call, or an assistant turn
-    // that requested tools). A final text answer with no tool_calls ends the turn -> no flash.
-    const finalAnswer = obj.type === 'assistant' &&
-      (!Array.isArray(obj.tool_calls) || obj.tool_calls.length === 0);
-    if (busy && !awaitingApproval && obj.type !== 'done' && !finalAnswer) startStatus();
-    if (obj.type === 'ready' || obj.type === 'done') prompt();
-    if (obj.type === 'bye') { stopStatus(); term.processExit(0); }
+    if (obj.type === 'bye') { return term.processExit(0); }
+    renderFooter();                              // the input box is always back, ready for you
+    if (busy && !awaitingApproval && !inMenu) startStatus(); else stopStatus();
   }
 
-  term.on('key', (name) => {
-    if (name === 'CTRL_C') { send({ type: 'shutdown' }); try { child && child.stdin.end(); } catch (e) {} term.processExit(0); }
-  });
+  term.on('key', onKey);
+  term.grabInput({ mouse: false });              // raw keys so the box is live while busy
 
   // --- startup: banner, then ensure a brain is configured (wizard on first run) ----
   banner(term);
   w('\n' + A.dim + '  post-training swarm · one chat, the swarm works behind it' + A.r + '\n');
   (async () => {
+    inMenu = true;                               // the wizard (if shown) owns the keys
     let cfg = resolveBrainConfig(brain);
     if (!cfg) cfg = await setupWizard(term);
+    inMenu = false;
     if (!cfg) { w(A.red + '  no brain configured; exiting.' + A.r + '\n'); term.processExit(1); return; }
-    w(A.dim + '  starting backend…  (/help for commands · Ctrl-C to quit)' + A.r + '\n');
+    w(A.dim + '  starting backend…  (type anytime · Ctrl-C interrupts, twice quits)' + A.r + '\n');
     startBackend(cfg);
   })();
 }
