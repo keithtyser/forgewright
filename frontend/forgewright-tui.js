@@ -11,7 +11,46 @@
 'use strict';
 
 const readline = require('readline');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { formatEvent } = require('./lib/render');
+
+// --- persisted credentials (shared with the Python backend) ------------------------
+// Written by the first-run setup wizard so the user configures their brain once. Same file
+// the backend reads (forgewright/credentials.py): ~/.forgewright/credentials.json.
+const OPENROUTER_DEFAULT_MODEL = 'openrouter:deepseek/deepseek-v4-pro';
+function fwHome() { return process.env.FORGEWRIGHT_HOME || path.join(os.homedir(), '.forgewright'); }
+function credsPath() { return path.join(fwHome(), 'credentials.json'); }
+function codexAuthPath() {
+  const base = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+  return path.join(base, 'auth.json');
+}
+function loadCreds() {
+  try { return JSON.parse(fs.readFileSync(credsPath(), 'utf8')) || {}; } catch (e) { return {}; }
+}
+function saveCreds(creds) {
+  try {
+    fs.mkdirSync(fwHome(), { recursive: true });
+    fs.writeFileSync(credsPath(), JSON.stringify(creds, null, 2), 'utf8');
+    try { fs.chmodSync(credsPath(), 0o600); } catch (e) {}
+  } catch (e) { w(A.red + '  could not save credentials: ' + e.message + A.r + '\n'); }
+}
+function envFromCreds(creds) {
+  const env = {};
+  if (creds.openrouter_api_key) env.OPENROUTER_API_KEY = creds.openrouter_api_key;
+  if (creds.anthropic_api_key) env.ANTHROPIC_API_KEY = creds.anthropic_api_key;
+  if (creds.openai_api_key) env.OPENAI_API_KEY = creds.openai_api_key;
+  return env;
+}
+// Returns { brain, env } if a brain is already configured (flag > saved creds > env), else null.
+function resolveBrainConfig(brainArg) {
+  const creds = loadCreds();
+  const env = envFromCreds(creds);
+  const haveOR = process.env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY;
+  const brain = brainArg || creds.brain || (haveOR ? OPENROUTER_DEFAULT_MODEL : null);
+  return brain ? { brain, env } : null;
+}
 
 // --- ANSI paint (dynamic text goes through here, NOT terminal-kit's term(), so model
 //     output containing ^ or % cannot break the markup) ----------------------------
@@ -101,19 +140,33 @@ function interactive(brain) {
     }
   }
 
-  // backend
+  // backend (spawned after the brain is configured; can be restarted by /login)
   const python = process.env.FORGEWRIGHT_PYTHON || 'python3';
-  const args = ['-m', 'forgewright', 'serve'];
-  if (brain) args.push('--brain', brain);
-  const child = spawn(python, args, { stdio: ['pipe', 'pipe', 'inherit'], shell: process.platform === 'win32' });
-  child.on('error', (e) => {
-    w(A.red + 'forgewright: could not start the backend (' + python + ' -m forgewright serve): ' + e.message + A.r + '\n' +
-      'Install it (pip install -e .) and/or set FORGEWRIGHT_PYTHON to your venv python.\n');
-    process.exit(1);
-  });
-
+  let child = null, rl = null, currentBrain = null, restarting = false;
   let busy = false, awaitingApproval = false;
-  const send = (obj) => child.stdin.write(JSON.stringify(obj) + '\n');
+  const send = (obj) => { if (child && child.stdin.writable) child.stdin.write(JSON.stringify(obj) + '\n'); };
+
+  function startBackend(cfg) {
+    currentBrain = cfg.brain;
+    const args = ['-m', 'forgewright', 'serve'];
+    if (cfg.brain) args.push('--brain', cfg.brain);
+    child = spawn(python, args, {
+      stdio: ['pipe', 'pipe', 'inherit'],
+      shell: process.platform === 'win32',
+      env: Object.assign({}, process.env, cfg.env || {}),
+    });
+    child.on('error', (e) => {
+      w(A.red + 'forgewright: could not start the backend (' + python + ' -m forgewright serve): ' + e.message + A.r + '\n' +
+        'Install it (pip install -e .) and/or set FORGEWRIGHT_PYTHON to your venv python.\n');
+      process.exit(1);
+    });
+    child.on('exit', (code) => {
+      if (restarting) return;          // a /login restart will respawn; don't exit the app
+      stopStatus(); term.processExit(code || 0);
+    });
+    rl = readline.createInterface({ input: child.stdout });
+    rl.on('line', onLine);
+  }
 
   // a single in-place status line: braille spinner + elapsed + running token count.
   // Overwrites in place (pads to clear leftovers) instead of erase-then-write, which avoids
@@ -144,9 +197,42 @@ function interactive(brain) {
     w(A.green + A.b + '❯ ' + A.r);
     term.inputField({ cancelable: true }, (err, input) => {
       w('\n');
-      if (input && input.trim()) { busy = true; send({ type: 'user_msg', text: input.trim() }); startStatus(); }
-      else prompt();
+      const t = (input || '').trim();
+      if (!t) return prompt();
+      if (t[0] === '/') return handleSlash(t);
+      busy = true; send({ type: 'user_msg', text: t }); startStatus();
     });
+  }
+
+  function showHelp() {
+    w('\n' + A.b + '  commands' + A.r + '\n');
+    w('  ' + A.cyan + '/login' + A.r + A.dim + '   reconfigure or refresh your brain (OpenRouter key / Codex login)' + A.r + '\n');
+    w('  ' + A.cyan + '/brain' + A.r + A.dim + '   show the brain in use' + A.r + '\n');
+    w('  ' + A.cyan + '/help' + A.r + A.dim + '    this help' + A.r + '\n');
+    w('  ' + A.cyan + '/quit' + A.r + A.dim + '    exit (or Ctrl-C)' + A.r + '\n');
+  }
+
+  function handleSlash(cmd) {
+    const c = cmd.toLowerCase();
+    if (c === '/login' || c === '/auth' || c === '/refresh') { relogin(); return; }
+    if (c === '/quit' || c === '/exit') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); return; }
+    if (c === '/brain') { w('  ' + A.dim + 'brain: ' + (currentBrain || '(default)') + A.r + '\n'); return prompt(); }
+    if (c === '/help' || c === '/?') { showHelp(); return prompt(); }
+    w('  ' + A.dim + 'unknown command ' + cmd + ' — try /help' + A.r + '\n');
+    return prompt();
+  }
+
+  // Re-run the setup wizard, then restart the backend with the new credentials so a fresh
+  // API key / Codex login takes effect without leaving the app.
+  async function relogin() {
+    const cfg = await setupWizard(term);
+    if (!cfg) return prompt();
+    restarting = true;
+    try { rl.close(); } catch (e) {}
+    const old = child;
+    old.once('exit', () => { restarting = false; w(A.dim + '  restarting backend…' + A.r + '\n'); startBackend(cfg); });
+    try { old.stdin.end(); } catch (e) {}
+    try { old.kill(); } catch (e) {}
   }
 
   function handleApproval(obj) {
@@ -154,9 +240,15 @@ function interactive(brain) {
     w('\n' + A.yellow + '─── approval needed ' + '─'.repeat(Math.max(0, ((term.width || 80) - 22))) + A.r + '\n');
     w('  ' + A.yellow + A.b + '⚠ ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
     if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + clip(JSON.stringify(obj.args), 200) + A.r + '\n');
-    const items = ['approve once', 'approve all ' + (obj.tool || ''), 'YOLO: bypass all', 'deny'];
+    w('  ' + A.dim + '↑/↓ to choose · enter to confirm' + A.r + '\n');
+    // singleColumnMenu navigates with UP/DOWN + ENTER (singleLineMenu used left/right, which
+    // is what tripped people up). Vertical also matches Claude Code's approval prompt.
+    const items = ['approve once', 'approve all ' + (obj.tool || ''), 'YOLO: bypass all permissions', 'deny'];
     const decisions = ['yes', 'all', 'yolo', 'no'];
-    term.singleLineMenu(items, { selectedIndex: 0, style: term.gray, selectedStyle: term.brightWhite.bgGreen }, (err, resp) => {
+    term.singleColumnMenu(items, {
+      selectedIndex: 0, cancelable: false, leftPadding: '    ', selectedLeftPadding: '  ❯ ',
+      style: term.gray, selectedStyle: term.brightWhite.bgGreen,
+    }, (err, resp) => {
       w('\n');
       send({ type: 'approval_response', decision: decisions[(resp && resp.selectedIndex != null) ? resp.selectedIndex : 3] });
       awaitingApproval = false;
@@ -164,8 +256,7 @@ function interactive(brain) {
     });
   }
 
-  const rl = readline.createInterface({ input: child.stdout });
-  rl.on('line', (line) => {
+  function onLine(line) {
     line = line.trim(); if (!line) return;
     let obj; try { obj = JSON.parse(line); } catch (e) { return; }
     if (obj.type === 'approval_request') { handleApproval(obj); return; }
@@ -179,15 +270,73 @@ function interactive(brain) {
     if (busy && !awaitingApproval && obj.type !== 'done' && !finalAnswer) startStatus();
     if (obj.type === 'ready' || obj.type === 'done') prompt();
     if (obj.type === 'bye') { stopStatus(); term.processExit(0); }
-  });
-  child.on('exit', (code) => { stopStatus(); term.processExit(code || 0); });
+  }
+
   term.on('key', (name) => {
-    if (name === 'CTRL_C') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); }
+    if (name === 'CTRL_C') { send({ type: 'shutdown' }); try { child && child.stdin.end(); } catch (e) {} term.processExit(0); }
   });
 
+  // --- startup: banner, then ensure a brain is configured (wizard on first run) ----
   banner(term);
   w('\n' + A.dim + '  post-training swarm · one chat, the swarm works behind it' + A.r + '\n');
-  w(A.dim + '  starting backend…  (Ctrl-C to quit)' + A.r + '\n');
+  (async () => {
+    let cfg = resolveBrainConfig(brain);
+    if (!cfg) cfg = await setupWizard(term);
+    if (!cfg) { w(A.red + '  no brain configured; exiting.' + A.r + '\n'); term.processExit(1); return; }
+    w(A.dim + '  starting backend…  (/help for commands · Ctrl-C to quit)' + A.r + '\n');
+    startBackend(cfg);
+  })();
+}
+
+// First-run (and /login) setup: pick a brain and persist it. Resolves to { brain, env } or
+// null if the user backs out. Uses a vertical menu (up/down + enter) and hidden input.
+function setupWizard(term) {
+  return new Promise((resolve) => {
+    w('\n' + A.b + '  Set up your brain' + A.r + A.dim + ' — how the agent connects to a model.' + A.r + '\n');
+    w(A.dim + '  ↑/↓ to choose · enter to confirm' + A.r + '\n\n');
+    const items = ['OpenRouter API key  (hosted models)', 'Codex  (ChatGPT login / gpt-5-codex)'];
+    term.singleColumnMenu(items, {
+      selectedIndex: 0, cancelable: true, leftPadding: '    ', selectedLeftPadding: '  ❯ ',
+      style: term.gray, selectedStyle: term.brightWhite.bgGreen,
+    }, (err, resp) => {
+      w('\n');
+      const idx = (resp && resp.selectedIndex != null && !resp.canceled) ? resp.selectedIndex : -1;
+      if (idx === 0) return wizardOpenRouter(term, resolve);
+      if (idx === 1) return wizardCodex(term, resolve);
+      resolve(null);   // canceled
+    });
+  });
+}
+
+function wizardOpenRouter(term, resolve) {
+  w('  Paste your OpenRouter API key ' + A.dim + '(hidden; get one at openrouter.ai/keys)' + A.r + '\n');
+  w(A.green + A.b + '  ❯ ' + A.r);
+  term.inputField({ echoChar: '*', cancelable: true }, (err, input) => {
+    w('\n');
+    const key = (input || '').trim();
+    if (!key) { w(A.red + '  no key entered.' + A.r + '\n'); return resolve(setupWizard(term)); }
+    const creds = loadCreds();
+    creds.brain = OPENROUTER_DEFAULT_MODEL;
+    creds.openrouter_api_key = key;
+    saveCreds(creds);
+    w(A.green + '  ✓ saved to ' + credsPath() + ' · change anytime with /login' + A.r + '\n');
+    resolve({ brain: creds.brain, env: { OPENROUTER_API_KEY: key } });
+  });
+}
+
+function wizardCodex(term, resolve) {
+  const authed = (() => { try { return fs.existsSync(codexAuthPath()); } catch (e) { return false; } })();
+  const creds = loadCreds();
+  creds.brain = 'oauth-codex';
+  delete creds.openrouter_api_key;
+  saveCreds(creds);
+  if (authed) {
+    w(A.green + '  ✓ Codex login found at ' + codexAuthPath() + ' · saved.' + A.r + '\n');
+  } else {
+    w('  No Codex login yet. In another terminal run ' + A.cyan + 'codex login' + A.r + ' (ChatGPT account),\n');
+    w('  then run ' + A.cyan + '/login' + A.r + ' here again. Starting anyway so you can do that now.\n');
+  }
+  resolve({ brain: 'oauth-codex', env: {} });
 }
 
 function banner(term) {

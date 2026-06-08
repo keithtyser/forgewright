@@ -51,12 +51,18 @@ console = Console()
 
 
 def _resolve_provider(brain: Optional[str], settings: Settings):
-    """Pick the brain: explicit --brain wins; else fall back to OpenRouter when its key is set
-    (so `forgewright` just starts with no flags); else the configured default provider."""
+    """Pick the brain. Order: explicit --brain > the saved setup-wizard credentials >
+    OpenRouter when its key is in the env > the configured default provider. Saved API keys
+    are loaded into the env first either way, so an explicit --brain still finds its key."""
     import os as _os
 
+    from forgewright.credentials import apply_credentials
+
+    saved_brain = apply_credentials()  # populate env from ~/.forgewright/credentials.json
     if brain:
         return parse_brain_arg(brain)
+    if saved_brain:
+        return parse_brain_arg(saved_brain)
     if _os.environ.get("OPENROUTER_API_KEY"):
         return parse_brain_arg("openrouter:deepseek/deepseek-v4-pro")
     return settings.provider()

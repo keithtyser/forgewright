@@ -91,19 +91,31 @@ pip install -e .
 cd frontend && npm install && npm install -g .   # use a user npm prefix if global is root-owned
 
 # 3. Launch the chat:
-export OPENROUTER_API_KEY=sk-or-...               # or any provider key
 forgewright
 ```
 
-`forgewright` starts the conversational TUI and spawns the Python backend
-(`python -m forgewright serve`) behind it. If the backend venv is not your default
-`python3`, point the TUI at it: `export FORGEWRIGHT_PYTHON=/path/to/venv/bin/python`. The
-brain auto-selects OpenRouter when `OPENROUTER_API_KEY` is set, so no flags are needed; pass
-`--brain kind:model` to override.
+On first launch `forgewright` runs a short setup wizard: pick **OpenRouter** (paste an API
+key) or **Codex** (ChatGPT login), and the choice is saved to
+`~/.forgewright/credentials.json` so you are never asked again. It then starts the
+conversational TUI and spawns the Python backend (`python -m forgewright serve`) behind it.
+If the backend venv is not your default `python3`, point the TUI at it:
+`export FORGEWRIGHT_PYTHON=/path/to/venv/bin/python`.
+
+In-chat slash commands:
+
+| command | what it does |
+|---|---|
+| `/login` | reconfigure or refresh your brain (new OpenRouter key / re-run Codex login); restarts the backend with the new credentials |
+| `/brain` | show the brain currently in use |
+| `/help` | list commands |
+| `/quit` | exit (or Ctrl-C) |
+
+Approvals use a vertical menu: **up/down to choose, enter to confirm**.
 
 ### Brains
 
-Any LiteLLM-supported backend can drive the swarm, plus a Codex (ChatGPT login) tap:
+You can also pick a brain explicitly with `--brain` (this overrides the saved setup). Any
+LiteLLM-supported backend works, plus a Codex (ChatGPT login) tap:
 
 ```bash
 forgewright --brain openrouter:deepseek/deepseek-v4-pro   # hosted, key in OPENROUTER_API_KEY
