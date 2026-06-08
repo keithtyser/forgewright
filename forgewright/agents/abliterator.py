@@ -14,6 +14,7 @@ from typing import Optional, Sequence
 from forgewright.agents.base import Specialist
 from forgewright.contracts import Artifact, Gate, ModelArtifact
 from forgewright.skills.abliterate import write_abliterate_config
+from forgewright.skills.modelspec import model_spec
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.forge import ForgeRunner, ForgeTool
 from forgewright.tools.jobs import JobManager, LaunchJobTool, MonitorJobTool, TailLogsTool
@@ -66,6 +67,13 @@ class Abliterator(Specialist):
         # collect/export need LOCAL weights; if handed a bare HF id, prefer a local mirror so we
         # run in-container (where transformers knows the arch) instead of failing on a remote id.
         source = self._resolve_local(model.uri)
+        # derive the projection targets from the model's architecture (so abliteration edits the
+        # right modules for non-qwen models too); fall back to the standard decoder-LLM defaults.
+        spec = model_spec(self.forge, source)
+        suffixes = (spec or {}).get("abliterate_target_suffixes") or None
+        if spec and not spec.get("arch_known", True):
+            self._emit("assistant", content=f"note: '{spec.get('model_type')}' arch unrecognized; "
+                       f"using default projection targets {suffixes}")
         # A UNIQUE, timestamped output name so we can never collide with (or silently inherit)
         # a pre-existing abliterated model directory. If this run does not write weights here,
         # the dir simply will not exist -> the gate fails honestly.
@@ -75,6 +83,7 @@ class Abliterator(Specialist):
             self.forge.repo, family, name=name, source=source, local_dir=source,
             strength=strength, layer_skip_first=layer_skip_first, layer_skip_last=layer_skip_last,
             layer_start=layer_start, layer_end=layer_end, overwrite=True,
+            target_weight_suffixes=suffixes,
         )
         rel = f"configs/abliteration/{name}.yaml"
         stem = source.rstrip("/").split("/")[-1]

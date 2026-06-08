@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
@@ -153,7 +153,7 @@ lora:
   r: {lora_r}
   alpha: {lora_alpha}
   dropout: 0.0
-  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  target_modules: [{lora_target_modules}]
   modules_to_save: []
 
 data:
@@ -257,11 +257,18 @@ def scaffold_uplift_config(
     trust_remote_code: bool = True,
     dry_run_only: bool = False,
     target_to_beat: str = "self/base",
+    lora_target_modules: Optional[list[str]] = None,
 ) -> str:
-    """Render a model-forge finetune config for an uplift (distillation SFT) run."""
+    """Render a model-forge finetune config for an uplift (distillation SFT) run.
+
+    lora_target_modules are derived from the model's architecture (default = standard
+    decoder-LLM attention + MLP projections), so LoRA attaches to the right modules per model."""
     name = name or f"{family}_uplift_v0"
     stem = source.rstrip("/").split("/")[-1]
+    targets = lora_target_modules or ["q_proj", "k_proj", "v_proj", "o_proj",
+                                      "gate_proj", "up_proj", "down_proj"]
     return UPLIFT_CONFIG_TEMPLATE.format(
+        lora_target_modules=", ".join(targets),
         name=name,
         family=family,
         source=source,

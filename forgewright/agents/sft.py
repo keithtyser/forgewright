@@ -15,6 +15,7 @@ from typing import Optional, Sequence
 from forgewright.agents.base import Specialist
 from forgewright.contracts import AdapterArtifact, Artifact, Gate
 from forgewright.skills.finetune import build_container_train_command, write_finetune_config
+from forgewright.skills.modelspec import model_spec
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.forge import ForgeRunner, ForgeTool
 from forgewright.tools.jobs import JobManager, LaunchJobTool, MonitorJobTool, TailLogsTool
@@ -58,9 +59,13 @@ class SFTTrainer(Specialist):
         name = dataset.meta.get("run_name") or f"{family}_uplift_v0"
 
         self._emit("assistant", content=f"SFT on {source} from dataset {dataset.id} ({dataset.uri})")
+        # attach LoRA to the modules this architecture actually has (default decoder-LLM set if unknown)
+        spec = model_spec(self.forge, source)
+        lora_targets = (spec or {}).get("lora_target_modules") or None
         cfg, man, reg = write_finetune_config(
             self.forge.repo, family, name=name, source=source,
             data_path=dataset.uri, max_steps=max_steps, save_steps=max_steps, overwrite=True,
+            lora_target_modules=lora_targets,
         )
         prep = self.forge.run(f"finetune --config configs/finetuning/{name}.yaml prepare --overwrite", timeout=900)
         if not prep.ok:

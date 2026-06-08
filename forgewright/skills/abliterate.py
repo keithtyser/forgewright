@@ -66,12 +66,8 @@ edit:
   direction_transform: biprojection
   norm_preserve: true
   strength: {strength}
-  module_strengths:
-    self_attn.o_proj.weight: 1.25
-    mlp.down_proj.weight: 0.75
-{layer_window}  target_weight_suffixes:
-    - mlp.down_proj.weight
-    - self_attn.o_proj.weight
+{module_strengths}{layer_window}  target_weight_suffixes:
+{target_suffixes}
   leave_embeddings_untouched: true
   leave_lm_head_untouched: true
   leave_moe_experts_untouched: true
@@ -128,12 +124,14 @@ def scaffold_abliterate_config(
     strength: float = 3.0,
     min_free_cuda_gb: int = 8,
     trust_remote_code: bool = True,
+    target_weight_suffixes: Optional[list[str]] = None,
 ) -> str:
     """Render a model-forge abliteration config for ``family`` (projection method).
 
     layer_start/layer_end are omitted by default so model-forge derives the edit window from
-    the layers collection actually produces directions for (driven by layer_skip_first/last);
-    this keeps the collected and edited windows consistent. Set them only to override."""
+    the layers collection actually produces directions for (driven by layer_skip_first/last).
+    target_weight_suffixes are the output projections to edit, derived from the model's
+    architecture (default = standard decoder-LLM attn/MLP output projections)."""
     name = name or f"{family}_abliterated_v0"
     stem = source.rstrip("/").split("/")[-1]
     parts = []
@@ -142,6 +140,13 @@ def scaffold_abliterate_config(
     if layer_end is not None:
         parts.append(f"  layer_end: {layer_end}")
     layer_window = ("\n".join(parts) + "\n") if parts else ""
+
+    # the modules to project; the first (attention output) gets a stronger weight than the MLP.
+    suffixes = list(target_weight_suffixes or ["self_attn.o_proj.weight", "mlp.down_proj.weight"])
+    ms = "\n".join(f"    {s}: {1.25 if i == 0 else 0.75}" for i, s in enumerate(suffixes))
+    module_strengths = f"  module_strengths:\n{ms}\n"
+    target_suffixes = "\n".join(f"    - {s}" for s in suffixes)
+
     return ABLITERATE_CONFIG_TEMPLATE.format(
         name=name,
         source=source,
@@ -153,6 +158,8 @@ def scaffold_abliterate_config(
         layer_skip_first=layer_skip_first,
         layer_skip_last=layer_skip_last,
         layer_window=layer_window,
+        module_strengths=module_strengths,
+        target_suffixes=target_suffixes,
         strength=strength,
         min_free_cuda_gb=min_free_cuda_gb,
         trust_remote_code=str(trust_remote_code).lower(),

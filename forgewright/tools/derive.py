@@ -9,9 +9,9 @@ post-train an arbitrary model on arbitrary hardware, and it fails fast instead o
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Optional
 
+from forgewright.skills.modelspec import model_spec
 from forgewright.skills.quantize import choose_quant_method
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
@@ -71,13 +71,10 @@ class DerivePlanTool(Tool):
         arch = gpu.get("arch", "unknown")
         supported = gpu.get("supported_quant", [])
 
-        described = self.forge.run(f"model describe {model} --json")
-        if not described.ok:
-            return ToolResult(False, f"could not introspect model at {model}: {described.output}")
-        try:
-            spec = json.loads(described.output.strip().splitlines()[-1])
-        except (json.JSONDecodeError, IndexError):
-            return ToolResult(False, f"model describe did not return JSON: {described.output[:200]}")
+        spec = model_spec(self.forge, model)
+        if spec is None:
+            return ToolResult(False, f"could not introspect model at {model} "
+                              "(no readable config.json, or `forge model describe` unavailable)")
 
         quant_method = choose_quant_method(supported)
         family = str(model).rstrip("/").split("/")[-1].lower().replace(".", "_").replace("-", "_")
