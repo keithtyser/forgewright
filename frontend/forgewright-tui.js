@@ -115,18 +115,27 @@ function interactive(brain) {
   let busy = false, awaitingApproval = false;
   const send = (obj) => child.stdin.write(JSON.stringify(obj) + '\n');
 
-  // a single in-place status line: glyph + elapsed + running token count (Claude-Code style)
-  const GLYPHS = ['✻', '✽', '✢', '✳', '∗'];
-  const status = { timer: null, start: 0, tokens: 0, i: 0 };
+  // a single in-place status line: braille spinner + elapsed + running token count.
+  // Overwrites in place (pads to clear leftovers) instead of erase-then-write, which avoids
+  // the per-frame flicker.
+  const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+  const status = { timer: null, start: 0, tokens: 0, i: 0, prevLen: 0 };
   const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
   function drawStatus() {
     const el = Math.round((Date.now() - status.start) / 1000);
     const g = GLYPHS[(status.i++) % GLYPHS.length];
     const tok = status.tokens ? ' · ↑ ' + fmtTok(status.tokens) + ' tokens' : '';
-    w('\r\x1b[2K' + '\x1b[35m' + g + A.r + ' ' + A.dim + 'working… (' + el + 's' + tok + ')' + A.r);
+    const plain = g + ' working… (' + el + 's' + tok + ')';
+    const colored = '\x1b[35m' + g + A.r + ' ' + A.dim + 'working… (' + el + 's' + tok + ')' + A.r;
+    const pad = status.prevLen > plain.length ? ' '.repeat(status.prevLen - plain.length) : '';
+    w('\r' + colored + pad);
+    status.prevLen = plain.length;
   }
-  function startStatus() { stopStatus(); status.start = Date.now(); status.i = 0; status.timer = setInterval(drawStatus, 140); drawStatus(); }
-  function stopStatus() { if (status.timer) { clearInterval(status.timer); status.timer = null; } w('\r\x1b[2K'); }
+  function startStatus() { stopStatus(); status.start = Date.now(); status.i = 0; status.timer = setInterval(drawStatus, 120); drawStatus(); }
+  function stopStatus() {
+    if (status.timer) { clearInterval(status.timer); status.timer = null; }
+    if (status.prevLen) { w('\r' + ' '.repeat(status.prevLen) + '\r'); status.prevLen = 0; }
+  }
 
   function prompt() {
     if (busy || awaitingApproval) return;
