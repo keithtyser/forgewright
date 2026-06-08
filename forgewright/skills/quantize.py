@@ -17,13 +17,13 @@ from pathlib import Path
 # literal `{target_variant}` placeholder that model-forge expands at run time.
 QUANT_CONFIG_TEMPLATE = """\
 schema_version: model_forge.quantization.v1
-name: {family}_nvfp4_modelopt
-description: "Self-quantize {family} to Blackwell NVFP4 (NVIDIA ModelOpt) on a single DGX Spark."
+name: {family}_{method}_{backend}
+description: "Self-quantize {family} to {method} ({backend}); method chosen for the GPU's arch."
 family: {family}
 source_variant: {source_variant}
 target_variant: {target_variant}
-method: nvfp4
-backend: modelopt
+method: {method}
+backend: {backend}
 objective: quantized_quality_retention
 hardware_profile: dgx_spark
 calibration:
@@ -43,14 +43,14 @@ export:
   ptq:
     strategy: {strategy}
     script: {script}
-    qformat: nvfp4
+    qformat: {qformat}
     dataset: cnn_dailymail
     calib_size: {calib_samples}
     calib_seq: {calib_seq}
     batch_size: 4
     tensor_parallel: 1
     gpu_max_mem_percentage: 0.70
-    kv_cache_qformat: fp8_cast
+    kv_cache_qformat: {kv_cache_qformat}
     low_memory_mode: true
     trust_remote_code: true
     skip_generate: true
@@ -63,14 +63,14 @@ runtime:
   max_model_len: 8192
   vllm_flags:
     trust_remote_code: true
-    quantization: modelopt
+    quantization: {backend}
     kv_cache_dtype: fp8
 outputs:
   reports_dir: reports/generated/quantization
   models_dir: ~/models/model-forge-quantized/{family}
 # Speedup-based gate — NO static tok/s floor (varies by model + hardware).
 gates:
-  nvfp4:
+  {gate_key}:
     min_output_speedup: {min_speedup}
     min_decode_heavy_output_speedup: {min_speedup}
 """
@@ -102,24 +102,51 @@ _ARCH_STRATEGY = {
     "gemma": ("gemma4_moe_modelopt", "scripts/quantization/gemma4_moe_nvfp4.py"),
 }
 
+# quant method -> (backend, qformat, kv_cache_qformat, gate_key). nvfp4/fp8 export today via
+# ModelOpt; int8/awq land with the model-forge Phase-2 export support.
+_METHOD_SPEC = {
+    "nvfp4": ("modelopt", "nvfp4", "fp8_cast", "nvfp4"),
+    "fp8": ("modelopt", "fp8", "fp8_cast", "fp8"),
+    "int8": ("modelopt", "int8", "auto", "int8"),
+    "awq": ("autoawq", "int4_awq", "auto", "awq"),
+}
+
+
+def choose_quant_method(supported_quant, requested: str | None = None) -> str | None:
+    """Pick the quant method for a GPU. ``supported_quant`` is the arch's methods (best-first,
+    from gpu_inspect / model-forge). Honor an explicit request if supported; else take the best
+    supported. Returns None when the GPU supports no quantization (serve bf16 instead)."""
+    supported = [m for m in (supported_quant or []) if m in _METHOD_SPEC]
+    if requested:
+        return requested if requested in supported else None
+    return supported[0] if supported else None
+
 
 def scaffold_quant_config(
     family: str,
     *,
+    method: str = "nvfp4",
     arch: str = "qwen",
     source_variant: str = "base",
-    target_variant: str = "base_nvfp4_modelopt",
+    target_variant: str | None = None,
     calib_samples: int = 256,
     calib_seq: int = 1024,
     port: int = 8000,
     min_speedup: float = 1.3,
 ) -> str:
-    """Render an NVFP4 ModelOpt quant config for ``family`` (speedup-gated)."""
+    """Render a quant config for ``family`` (speedup-gated). ``method`` is chosen for the GPU's
+    arch (nvfp4/fp8/int8/awq); the backend/qformat/gate are derived from it."""
+    backend, qformat, kv_cache_qformat, gate_key = _METHOD_SPEC.get(method, _METHOD_SPEC["nvfp4"])
     strategy, script = _ARCH_STRATEGY.get(arch, _ARCH_STRATEGY["qwen"])
     return QUANT_CONFIG_TEMPLATE.format(
         family=family,
+        method=method,
+        backend=backend,
+        qformat=qformat,
+        kv_cache_qformat=kv_cache_qformat,
+        gate_key=gate_key,
         source_variant=source_variant,
-        target_variant=target_variant,
+        target_variant=target_variant or f"base_{method}_{backend}",
         strategy=strategy,
         script=script,
         calib_samples=calib_samples,
@@ -129,11 +156,17 @@ def scaffold_quant_config(
     )
 
 
-def write_quant_config(repo: Path, family: str, *, overwrite: bool = False, **kwargs) -> Path:
+def quant_config_name(family: str, method: str = "nvfp4") -> str:
+    backend = _METHOD_SPEC.get(method, _METHOD_SPEC["nvfp4"])[0]
+    return f"{family}_{method}_{backend}"
+
+
+def write_quant_config(repo: Path, family: str, *, method: str = "nvfp4",
+                       overwrite: bool = False, **kwargs) -> Path:
     """Write the scaffolded config into ``<repo>/configs/quantization/`` (idempotent)."""
-    cfg = Path(repo) / "configs" / "quantization" / f"{family}_nvfp4_modelopt.yaml"
+    cfg = Path(repo) / "configs" / "quantization" / f"{quant_config_name(family, method)}.yaml"
     if cfg.exists() and not overwrite:
         return cfg
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(scaffold_quant_config(family, **kwargs), encoding="utf-8")
+    cfg.write_text(scaffold_quant_config(family, method=method, **kwargs), encoding="utf-8")
     return cfg
