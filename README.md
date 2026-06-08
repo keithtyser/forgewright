@@ -1,13 +1,11 @@
 # Forgewright
 
-> A multi-agent swarm for **autonomous LLM post-training**. You talk to one
-> Claude-Code-style conversational CLI; behind it, a swarm of specialist agents
-> (data curation, fine-tuning, abliteration, quantization, serving optimization,
-> evaluation, publishing) hands typed artifacts to each other and does the work.
+> A multi-agent swarm for **autonomous LLM post-training**, behind one conversational CLI.
 
-Point it at a model and a goal, give it GPUs (local or over SSH), and it plans and runs
-the whole post-training pipeline. The swarm is invisible: you chat, watch progress stream
-in, and approve outward actions at a single prompt, just like a coding agent.
+Point it at a model and a goal, give it GPUs (local or over SSH), and it plans and runs the
+whole pipeline: data curation, fine-tuning, abliteration, quantization, serving optimization,
+eval, and publishing. The swarm is invisible: you chat, watch progress stream in, and approve
+outward actions at a single prompt, like a coding agent.
 
 ```bash
 forgewright "Curate a reasoning dataset, fine-tune Qwen3.5-0.8B on it,
@@ -52,7 +50,7 @@ From the chat, the conversational agent dispatches the swarm through the `run_re
 you state a goal, the agent picks the recipe + params and hands it to the Director, and the
 specialist progress plus any approval surface in the one transcript.
 
-## Capabilities (proven on a DGX Spark GB10, sm_121)
+## Capabilities
 
 - **Quantize**: NVFP4 (NVIDIA ModelOpt) with a speedup-based gate (no static floor).
 - **Fine-tune**: uplift distillation SFT (assistant-only loss, conservative LR, strict
@@ -154,19 +152,15 @@ python -m forgewright serve   # the newline-JSON event server the TUI spawns
 Heavy training, quantization, and abliteration run inside model-forge's GPU container on a
 Linux Blackwell box; Forgewright orchestrates them locally or over SSH.
 
-## Status
+## Live HUD
 
-The four core capabilities and the swarm backend are built and proven end to end on real
-hardware. The full three-stage swarm (DataCurator, SFTTrainer, Evaluator) runs through the
-Director with a single provenance chain and one role-tagged transcript. The terminal-kit
-Node TUI ships with a live **Swarm HUD**: while the swarm works, a panel hovers above the
-prompt showing the pipeline (each specialist's stage state), the active specialist, training
-step/loss/reward with sparklines, a guardrails gauge (the governor's step/GPU-hour/cost/wall
-caps with a live step bar), elapsed, and tokens. Training telemetry is structured: the
-backend taps trainer output into typed `metric` events the HUD consumes directly. Produced
-artifacts stream into the transcript as lineage badges (`◇ eval#def456 ← adapter#xyz789
-score 0.94 ✓`), and `/graph` draws the full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1`
-for a minimal one-line status instead. See `docs/` and the plan file for the slice breakdown.
+While the swarm works, a panel hovers above the prompt showing the pipeline (each
+specialist's stage state), the active specialist, training step/loss/reward with sparklines,
+a guardrails gauge (the governor's step/GPU-hour/cost/wall caps with a live step bar),
+elapsed, and tokens. Training telemetry is structured: the backend taps trainer output into
+typed `metric` events the HUD consumes directly. Produced artifacts stream into the transcript
+as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`), and `/graph` draws the
+full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead.
 
 ## Traces
 
