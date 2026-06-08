@@ -84,19 +84,29 @@ fallback and is used in tests.
 ## Install and run
 
 ```bash
-# Backend control plane (runs anywhere you type, including Windows):
+# 1. Python backend (on the GPU box, in a venv):
 pip install -e .
 
-# Conversational TUI (Node):
-cd frontend && npm install && npm start        # spawns `forgewright serve` behind the chat
+# 2. The `forgewright` command (the Node TUI):
+cd frontend && npm install && npm install -g .   # use a user npm prefix if global is root-owned
+
+# 3. Launch the chat:
+export OPENROUTER_API_KEY=sk-or-...               # or any provider key
+forgewright
 ```
 
-You can also use the backend directly without the Node UI:
+`forgewright` starts the conversational TUI and spawns the Python backend
+(`python -m forgewright serve`) behind it. If the backend venv is not your default
+`python3`, point the TUI at it: `export FORGEWRIGHT_PYTHON=/path/to/venv/bin/python`. The
+brain auto-selects OpenRouter when `OPENROUTER_API_KEY` is set, so no flags are needed; pass
+`--brain kind:model` to override.
+
+Backend-only (no Node UI):
 
 ```bash
-forgewright                      # built-in Python REPL (headless fallback)
-forgewright "<goal>" --yes       # one-shot, unattended
-forgewright serve                # newline-JSON event server (what the TUI spawns)
+forgewright            # python entry: built-in REPL (also: `python -m forgewright`)
+forgewright "<goal>" --yes    # one-shot, unattended
+python -m forgewright serve   # the newline-JSON event server the TUI spawns
 ```
 
 Heavy training, quantization, and abliteration run inside model-forge's GPU container on a
