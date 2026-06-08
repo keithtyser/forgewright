@@ -29,7 +29,7 @@ actually apply (never report a false PASS). You do not train or publish.
 
 class Evaluator(Specialist):
     role = "Evaluator"
-    accepts = ("adapter", "model")
+    accepts = ("adapter", "model", "served_endpoint")
     produces = "eval"
     description = "Held-out verifiable gate: AdapterArtifact -> EvalArtifact (PASS/REGRESSION)."
 
@@ -54,6 +54,14 @@ class Evaluator(Specialist):
             baseline: Optional[dict] = None) -> Artifact:
         self.validate_inputs(inputs)
         target = inputs[0]
+        if target.kind == "served_endpoint":
+            # final gate after model-optimization: held-out eval of the model the endpoint serves
+            model = next((c for c in (self.registry.get(p) for p in target.parents)
+                          if c is not None and c.kind == "model"), None)
+            if model is None:
+                raise ValueError("Evaluator: served_endpoint has no parent model to evaluate")
+            self._emit("assistant", content=f"eval served endpoint {target.id} via its model {model.id}")
+            return self._eval_model_internal(model, baseline=baseline)
         if target.kind == "model":
             # quantized / abliterated / merged model: gate via model-forge internal eval
             return self._eval_model_internal(target, baseline=baseline)

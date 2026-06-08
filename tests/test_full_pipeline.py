@@ -54,8 +54,22 @@ def test_full_recipe_chains_all_stages_with_evals():
                                seed_paths=["d.jsonl"], holdout="h.jsonl")
     roles = [s.specialist_cls.role for s in steps]
     assert roles == ["DataCurator", "SFTTrainer", "Evaluator", "Merger", "Abliterator",
-                     "Evaluator", "Quantizer", "Evaluator", "ServingOptimizer"]
-    assert roles.count("Evaluator") == 3   # gated after uplift, abliterate, quantize
+                     "Evaluator", "Quantizer", "Evaluator", "ServingOptimizer", "Evaluator"]
+    assert roles.count("Evaluator") == 4   # gated after uplift, abliterate, quantize, AND model-opt
+
+
+def test_evaluator_gates_served_endpoint_via_parent_model(tmp_path, monkeypatch):
+    from forgewright.agents.evaluator import Evaluator
+    from forgewright.contracts import ModelArtifact, ServedEndpoint
+
+    reg = Registry(tmp_path / "r.jsonl")
+    model = reg.register(ModelArtifact(uri="~/models/q", meta={"family": "q", "role": "quantized"}))
+    ep = ServedEndpoint(uri="http://localhost:8000", parents=[model.id], meta={"family": "q"})
+    seen = {}
+    monkeypatch.setattr(Evaluator, "_eval_model_internal",
+                        lambda self, m, baseline=None: seen.update(id=m.id) or m)
+    Evaluator(registry=reg).run([ep])
+    assert seen["id"] == model.id   # the final eval gates the model the endpoint serves
 
 
 def test_full_recipe_is_type_valid():

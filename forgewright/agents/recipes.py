@@ -66,20 +66,23 @@ def abliterate(*, model: ModelArtifact, strength: float = 3.0) -> tuple[list[Ste
 
 def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
          strength: float = 3.0, max_steps: int = 60) -> tuple[list[Step], list[Artifact]]:
-    """The full pipeline in one run, gated after every transform so a regression can't flow
-    downstream: curate -> SFT -> EVAL -> merge -> abliterate -> EVAL -> quantize -> EVAL ->
-    serving-opt. (Merge bridges the adapter->model gap; ServingOptimizer self-gates quality.)"""
+    """The full pipeline in one run, with an EVAL gate after EVERY transform so a regression can't
+    flow downstream: curate -> SFT -> EVAL -> merge -> abliterate -> EVAL -> quantize -> EVAL ->
+    serving-opt -> EVAL. (Merge bridges the adapter->model gap; ServingOptimizer also self-evals
+    each serving config, and the final Evaluator held-out-gates the optimized served model.)"""
     return [
         Step(DataCurator, run_kwargs={"mode": "curate_seed", "seed_paths": list(seed_paths),
              "family": family, "source": source, "run_name": f"{family}_uplift", "holdout": holdout}),
         Step(SFTTrainer, run_kwargs={"max_steps": max_steps}),
-        Step(Evaluator, run_kwargs={"holdout": holdout}),          # uplift quality
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # 1) uplift quality
         Step(Merger),
         Step(Abliterator, run_kwargs={"strength": strength}),
-        Step(Evaluator, run_kwargs={"holdout": holdout}),          # refusal drop + capability hold
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # 2) refusal drop + capability hold
         Step(Quantizer),
-        Step(Evaluator, run_kwargs={"holdout": holdout}),          # quant quality retention
-        Step(ServingOptimizer, run_kwargs={"objective": "latency"}, compensate=_stop_served_endpoint),
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # 3) quant quality retention
+        Step(ServingOptimizer, run_kwargs={"objective": "latency", "eval_each": True},
+             compensate=_stop_served_endpoint),
+        Step(Evaluator, run_kwargs={"holdout": holdout}),          # 4) optimized served model
     ], []
 
 
