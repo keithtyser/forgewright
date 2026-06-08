@@ -30,11 +30,13 @@ class BackendServer:
         self.handle_turn = handle_turn
         self.emit = emit
         self.reporter = event_reporter(emit)
+        # one policy for the whole session, so "approve all" / "yolo" persist across turns
+        self.permissions = PermissionPolicy()
 
-    def run_turn(self, text: str, *, ask_fn: Optional[Callable[[Any, dict], bool]] = None) -> None:
-        permissions = PermissionPolicy(ask_fn=ask_fn)
+    def run_turn(self, text: str, *, ask_fn: Optional[Callable[[Any, dict], Any]] = None) -> None:
+        self.permissions.ask_fn = ask_fn   # rebind this turn's approver onto the session policy
         try:
-            self.handle_turn(text, self.reporter, permissions)
+            self.handle_turn(text, self.reporter, self.permissions)
             self.emit({"type": "done", "ok": True})
         except Exception as e:  # noqa: BLE001 - report the failure, keep the session alive
             self.emit({"type": "done", "ok": False, "error": str(e)})

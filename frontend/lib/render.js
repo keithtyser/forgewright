@@ -28,6 +28,26 @@ function clip(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
+// Turn markdown-ish assistant text into clean terminal lines: KEEP the line structure
+// (so plans and tables stay readable), drop table-rule lines, and strip the noisy markers
+// (#, **bold**, `code`). Collapses runs of blank lines.
+function mdToLines(md) {
+  const out = [];
+  for (let line of String(md == null ? '' : md).replace(/\r/g, '').split('\n')) {
+    if (/^\s*\|?[\s:|-]*-{2,}[\s:|-]*\|?\s*$/.test(line)) continue;   // table rule row
+    line = line
+      .replace(/\*\*(.+?)\*\*/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/^#{1,6}\s*/, '')
+      .replace(/\s+$/, '');
+    if (line.length > 240) line = line.slice(0, 239) + '…';
+    if (line === '' && out[out.length - 1] === '') continue;          // collapse blank runs
+    out.push(line);
+  }
+  while (out.length && out[out.length - 1] === '') out.pop();
+  return out;
+}
+
 function argsSummary(args) {
   if (!args || typeof args !== 'object') return '';
   const s = JSON.stringify(args);
@@ -45,8 +65,8 @@ function formatEvent(obj) {
     case 'bye':
       return [{ text: '· session ended ·', color: 'gray' }];
     case 'assistant': {
-      const c = clip(obj.content, 2000);
-      if (c) out.push({ text: tag + c, color: roleColor(role) });
+      const lines = mdToLines(obj.content);
+      lines.forEach((ln, i) => out.push({ text: (i === 0 ? tag : '  ') + ln, color: roleColor(role) }));
       const calls = Array.isArray(obj.tool_calls) ? obj.tool_calls : [];
       if (calls.length) out.push({ text: '  → calling ' + calls.join(', '), color: 'cyan' });
       const u = obj.usage || {};

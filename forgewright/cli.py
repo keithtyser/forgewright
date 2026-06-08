@@ -183,8 +183,12 @@ def interactive(
     provider = _resolve_provider(brain, settings)
     targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
 
-    def ask(tool, args) -> bool:
-        return typer.confirm(f"Allow {tool.name} ({tool.risk})? args={_format_args(args)}")
+    def ask(tool, args) -> str:
+        choice = typer.prompt(
+            f"Allow {tool.name} ({tool.risk})? args={_format_args(args)}  [y=once / a=all / yolo / n=no]",
+            default="y",
+        ).strip().lower()
+        return {"y": "yes", "a": "all", "yolo": "yolo", "n": "no"}.get(choice, "no")
 
     policy = PermissionPolicy(ask_fn=None if yes else ask, auto_approve=yes)
     run_id = time.strftime("sess-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]

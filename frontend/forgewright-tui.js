@@ -84,10 +84,14 @@ function interactive(brain) {
     awaitingApproval = true;
     stopThinking();
     for (const r of formatEvent(obj)) { term[r.color](r.text); term('\n'); }
-    term.yellow('approve? [y/N] ');
-    term.yesOrNo({ yes: ['y', 'Y'], no: ['n', 'N', 'ENTER'] }, (err, yes) => {
+    const tool = obj.tool || 'command';
+    const items = ['approve once', 'approve all ' + tool, 'YOLO: bypass all', 'deny'];
+    const decisions = ['yes', 'all', 'yolo', 'no'];
+    term.yellow('approve ' + tool + '? ');
+    term.singleLineMenu(items, { selectedIndex: 0 }, (err, resp) => {
       term('\n');
-      send({ type: 'approval_response', approved: !!yes });
+      const i = (resp && resp.selectedIndex != null) ? resp.selectedIndex : 3;
+      send({ type: 'approval_response', decision: decisions[i] });
       awaitingApproval = false;
       if (busy) startThinking();
     });

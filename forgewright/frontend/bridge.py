@@ -30,14 +30,15 @@ def event_reporter(emit: Callable[[dict], None]) -> Callable[[str, dict], None]:
 
 class StreamApprover:
     """`PermissionPolicy.ask_fn` over the stream: emit an approval_request, block on the
-    matching approval_response. `read_response` returns the next UI->backend message dict
-    (the frontend is responsible for prompting the human and sending the decision)."""
+    matching approval_response. Returns the decision string ('yes'|'all'|'yolo'|'no') so the
+    policy can remember 'all' (this tool) or 'yolo' (everything). `read_response` returns the
+    next UI->backend message dict (the frontend prompts the human and sends the decision)."""
 
     def __init__(self, emit: Callable[[dict], None], read_response: Callable[[], Optional[dict]]) -> None:
         self.emit = emit
         self.read_response = read_response
 
-    def __call__(self, tool: Any, args: dict[str, Any]) -> bool:
+    def __call__(self, tool: Any, args: dict[str, Any]) -> str:
         self.emit({
             "type": "approval_request",
             "tool": getattr(tool, "name", str(tool)),
@@ -47,7 +48,9 @@ class StreamApprover:
         while True:
             msg = self.read_response()
             if msg is None:                       # stream closed -> deny (fail safe)
-                return False
+                return "no"
             if msg.get("type") == "approval_response":
-                return bool(msg.get("approved"))
+                if msg.get("decision"):
+                    return str(msg["decision"]).lower()
+                return "yes" if msg.get("approved") else "no"
             # ignore unrelated messages until the decision arrives

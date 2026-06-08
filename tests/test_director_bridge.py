@@ -107,7 +107,10 @@ def test_stream_approver_round_trips():
     class _Tool:
         name = "forge_publish"; risk = "destructive"
 
-    assert approver(_Tool(), {"args": "publish-model"}) is True
+    assert approver(_Tool(), {"args": "publish-model"}) == "yes"   # {approved:true} -> "yes"
     assert sent[0]["type"] == "approval_request" and sent[0]["tool"] == "forge_publish"
+    # explicit decision passes through (e.g. "all" / "yolo")
+    inbox2 = [{"type": "approval_response", "decision": "yolo"}]
+    assert StreamApprover(emit=sent.append, read_response=lambda: inbox2.pop(0))(_Tool(), {}) == "yolo"
     # stream closed -> deny (fail safe)
-    assert StreamApprover(emit=sent.append, read_response=lambda: None)(_Tool(), {}) is False
+    assert StreamApprover(emit=sent.append, read_response=lambda: None)(_Tool(), {}) == "no"
