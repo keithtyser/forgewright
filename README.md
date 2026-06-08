@@ -52,7 +52,8 @@ specialist progress plus any approval surface in the one transcript.
 
 ## Capabilities
 
-- **Quantize**: NVFP4 (NVIDIA ModelOpt) with a speedup-based gate (no static floor).
+- **Quantize**: the method follows the GPU (NVFP4 on Blackwell, FP8 on Hopper/Ada, INT8/AWQ on
+  Ampere, via NVIDIA ModelOpt), with a speedup-based gate (no static floor).
 - **Fine-tune**: uplift distillation SFT (assistant-only loss, conservative LR, strict
   `<think>` and holdout hygiene) and task-mode GRPO/RLVR with the user's RL scars baked in
   (KL anchor, PPO clip, DAPO overlong masking).
@@ -69,8 +70,15 @@ A light, cross-platform shared runtime (agent loop, [LiteLLM](https://github.com
 brain, tools, SSH, job manager, ledger, permissions) plus the swarm layer
 (`contracts`, `registry`, `agents`, the Director). It calls
 [`model-forge`](https://github.com/keithtyser/model-forge) for the mature ML-ops
-primitives and runs heavy GPU stages inside model-forge's posttrain container, so the same
-harness drives a Blackwell fleet over SSH.
+primitives and runs heavy GPU stages inside model-forge's posttrain container.
+
+**Generalize, don't assume.** The agent derives its strategy from two ground truths rather than
+hardcoding Blackwell/qwen: `gpu_inspect` + model-forge's `forge model describe` classify the GPU
+(arch, compute capability, supported quant) and the model (architecture, depth, module naming,
+MoE-ness, chat template). `derive_plan` fuses them into the run plan — precision, quant method,
+abliteration/LoRA target modules, family config, and a VRAM feasibility note — *before* any GPU
+job. So you point it at any model and any NVIDIA GPU (Ampere/Ada/Hopper/Blackwell) and it figures
+out the rest; on non-Blackwell it sets the quant method and posttrain container accordingly.
 
 ### Frontend
 
