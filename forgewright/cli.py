@@ -43,6 +43,7 @@ from forgewright.tools.jobs import (
     MonitorJobTool,
     TailLogsTool,
 )
+from forgewright.tools.derive import DerivePlanTool
 from forgewright.tools.shell import ShellTool
 from forgewright.tools.ssh import SSHTool
 from forgewright.tools.sysconfig import EnvConfigTool
@@ -89,6 +90,7 @@ def build_registry() -> ToolRegistry:
             WriteFileTool(),
             EditFileTool(),
             GPUInspectTool(),
+            DerivePlanTool(forge),
             DiscoverTool(forge),
             LaunchJobTool(jm),
             MonitorJobTool(jm),
