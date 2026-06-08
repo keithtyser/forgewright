@@ -96,6 +96,7 @@ class Evaluator(Specialist):
         import os as _os
 
         from forgewright.skills.abliterate import read_abliterate_metrics
+        from forgewright.skills.modelspec import model_spec
         from forgewright.skills.register_family import write_family_registration
         from forgewright.skills.serving_opt import ServingOptimizer as _Engine
 
@@ -105,11 +106,13 @@ class Evaluator(Specialist):
             _os.path.expanduser("~/models/"), "").lstrip("/")
         served = model.meta.get("served_model_name") or f"model-forge/{family}-{variant}"
         self._emit("assistant", content=f"internal-eval {model.id} as {family}/{variant}")
+        # introspect the model so the family config's architecture matches it (non-qwen support)
+        spec = model_spec(self.forge, model.uri)
         write_family_registration(
             self.forge.repo, family, source=model.meta.get("base", model.uri),
             extra_variants={variant: {"repo_id": model.meta.get("base", ""), "local_dir": rel,
                                       "served_model_name": served, "base_variant": "base"}},
-            overwrite=True,
+            overwrite=True, spec=spec,
         )
         engine = _Engine(self.forge, self.jobs)
         engine.stop()

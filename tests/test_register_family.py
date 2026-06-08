@@ -41,6 +41,38 @@ def test_derive_family_substitutes_identity_keeps_structure():
     assert out["architecture"]["family"] == "qwen"
 
 
+_LLAMA_SPEC = {
+    "model_type": "llama", "attn_modules": ["q_proj", "k_proj", "v_proj", "o_proj"],
+    "mlp_modules": ["gate_proj", "up_proj", "down_proj"], "arch_known": True,
+}
+_PHI3_SPEC = {
+    "model_type": "phi3", "attn_modules": ["qkv_proj", "o_proj"],
+    "mlp_modules": ["gate_up_proj", "down_proj"], "arch_known": True,
+}
+
+
+def test_derive_family_from_spec_rewrites_architecture_for_non_qwen():
+    out = derive_family_config(_REF_FAMILY, family="llama3_8b", source="meta-llama/Llama-3-8B",
+                               spec=_LLAMA_SPEC)
+    arch = out["architecture"]
+    assert arch["family"] == "llama"
+    assert "chat_template" not in arch                       # qwen3 reasoning parser dropped
+    assert arch["target_discovery"]["common_attention_patterns"] == ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+
+def test_derive_family_from_spec_keeps_qwen_chat_template():
+    out = derive_family_config(_REF_FAMILY, family="qwen35_0_8b", source="Qwen/Qwen3.5-0.8B",
+                               spec={"model_type": "qwen3_5", "attn_modules": ["q_proj"], "mlp_modules": ["down_proj"]})
+    assert out["architecture"]["chat_template"]["reasoning_parser"] == "qwen3"
+
+
+def test_derive_family_from_spec_uses_divergent_module_names():
+    out = derive_family_config(_REF_FAMILY, family="phi3", source="microsoft/Phi-3", spec=_PHI3_SPEC)
+    td = out["architecture"]["target_discovery"]
+    assert td["common_attention_patterns"] == ["qkv_proj", "o_proj"]
+    assert td["common_mlp_patterns"] == ["gate_up_proj", "down_proj"]
+
+
 def test_derive_family_with_extra_variant():
     out = derive_family_config(
         _REF_FAMILY, family="q08", source="Qwen/Qwen3.5-0.8B",
