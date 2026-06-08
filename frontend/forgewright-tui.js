@@ -119,6 +119,25 @@ function interactive(brain) {
     return ks.length ? clip(JSON.stringify(a), 90) : '';
   };
 
+  // Render a tool/job result under a `⎿`, PRESERVING line structure (forge plan boxes, logs)
+  // instead of squishing it to one line. Trims blank edges, collapses blank runs, clips each
+  // line to width, and caps the block with a "+N more lines" note.
+  function resultBlock(out, maxLines) {
+    const maxw = Math.max(30, (term.width || 80) - 6);
+    let lines = String(out).replace(/\r/g, '').split('\n').map((l) => l.replace(/\s+$/, ''));
+    while (lines.length && !lines[0].trim()) lines.shift();
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    const collapsed = [];
+    for (const l of lines) {
+      if (!l.trim() && collapsed.length && !collapsed[collapsed.length - 1].trim()) continue;
+      collapsed.push(l);
+    }
+    const more = collapsed.length > maxLines ? collapsed.length - maxLines : 0;
+    const shown = collapsed.slice(0, maxLines).map((l) => (l.length > maxw ? l.slice(0, maxw - 1) + '…' : l));
+    shown.forEach((l, i) => w('  ' + A.dim + (i === 0 ? '⎿  ' : '   ') + l + A.r + '\n'));
+    if (more) w('  ' + A.dim + '   … +' + more + ' more line' + (more === 1 ? '' : 's') + A.r + '\n');
+  }
+
   // pick a headline metric from an artifact's gate metrics (score-like first, else any number)
   const headlineMetric = (m) => {
     if (!m || typeof m !== 'object') return null;
@@ -150,11 +169,13 @@ function interactive(brain) {
       case 'tool': {
         const ok = obj.ok !== false;
         const arg = primaryArg(obj);
-        w(dot(ok ? A.green : A.red) + ' ' + roleLabel(obj.role) + (obj.tool || '') +
+        // a blank line before each action so consecutive tool calls read as distinct groups
+        w('\n' + dot(ok ? A.green : A.red) + ' ' + roleLabel(obj.role) + (obj.tool || '') +
           (arg ? A.dim + '(' + arg + ')' + A.r : '') + '\n');
         const out = String(obj.output || '').trim();
-        if (out) w('  ' + A.dim + '⎿  ' + clip(out, 400) + A.r + '\n');
+        if (out) resultBlock(out, 8);
         if (obj.role && obj.role !== 'agent') hud.activeRole = obj.role;
+        hud.actions += 1;
         hud.lastAction = clip((obj.tool || '') + (arg ? '(' + arg + ')' : ''), 48);
         break;
       }
@@ -202,7 +223,7 @@ function interactive(brain) {
         break;
       }
       case 'progress':
-        w('  ' + A.dim + '⎿  ' + clip(obj.text, 400) + A.r + '\n'); break;
+        resultBlock(String(obj.text || ''), 6); break;
       case 'graph':
         renderGraph(Array.isArray(obj.nodes) ? obj.nodes : []); break;
       case 'models':
@@ -291,7 +312,7 @@ function interactive(brain) {
   const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
-  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0,
+  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0, actions: 0,
     pipeline: null, metric: null, activeRole: null, lastAction: '' };
   // session provenance graph, accumulated from `artifact` events for /graph
   const sessionGraph = [];
@@ -362,6 +383,7 @@ function interactive(brain) {
     }
     if (m && m.grad_norm != null) { lb.add(' · '); lb.add('grad ' + fmtNum(m.grad_norm), A.dim); }
     if (!m && hud.lastAction) { lb.add(' · '); lb.add(hud.lastAction, A.dim); }
+    if (hud.actions) { lb.add(' · '); lb.add(hud.actions + ' actions', A.dim); }
     lb.add(' · '); lb.add(el + 's', A.dim);
     if (hud.tokens) { lb.add(' · '); lb.add('↑' + fmtTok(hud.tokens) + ' tok', A.dim); }
     out.push(lb.str());
@@ -370,7 +392,7 @@ function interactive(brain) {
   const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
 
   function hudResetTurn() {
-    hud.start = Date.now(); hud.i = 0; hud.tokens = 0;
+    hud.start = Date.now(); hud.i = 0; hud.tokens = 0; hud.actions = 0;
     hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = '';
   }
 
