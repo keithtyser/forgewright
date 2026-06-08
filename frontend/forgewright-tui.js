@@ -152,9 +152,30 @@ function interactive(brain) {
     if (name === 'CTRL_C') { send({ type: 'shutdown' }); try { child.stdin.end(); } catch (e) {} term.processExit(0); }
   });
 
-  // header
-  w('\n' + A.b + '\x1b[96m  forgewright' + A.r + A.dim + '  ·  post-training swarm  ·  one chat, the swarm works behind it' + A.r + '\n');
+  banner(term);
+  w('\n' + A.dim + '  post-training swarm · one chat, the swarm works behind it' + A.r + '\n');
   w(A.dim + '  starting backend…  (Ctrl-C to quit)' + A.r + '\n');
+}
+
+function banner(term) {
+  const width = (term && term.width) || 100;
+  const GRAD = ['\x1b[38;5;87m', '\x1b[38;5;81m', '\x1b[38;5;75m', '\x1b[38;5;69m', '\x1b[38;5;63m', '\x1b[38;5;33m'];
+  let art = null;
+  try {
+    const figlet = require('figlet');
+    for (const font of ['ANSI Shadow', 'Slant', 'Small']) {
+      const t = figlet.textSync('forgewright', { font });
+      const wmax = Math.max.apply(null, t.split('\n').map((l) => l.length));
+      if (wmax <= width - 2) { art = t; break; }
+    }
+  } catch (e) { art = null; }
+  w('\n');
+  if (art) {
+    const lines = art.replace(/\s+$/, '').split('\n');
+    lines.forEach((l, i) => w('  ' + (GRAD[i] || GRAD[GRAD.length - 1]) + l + A.r + '\n'));
+  } else {
+    w('  ' + A.b + GRAD[0] + 'forgewright' + A.r + '\n');   // fallback for tiny terminals
+  }
 }
 
 const argv = process.argv.slice(2);
