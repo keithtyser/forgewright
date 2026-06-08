@@ -278,9 +278,10 @@ def serve(
         agent.reporter = reporter
         agent.permissions = permissions
         _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
-        # the safety envelope for this turn (the UI renders it as a guardrails gauge)
+        # the safety envelope for this turn (the UI renders it as a guardrails gauge).
+        # max_steps is the ENFORCED agent-loop cap; gpu/cost/wall are governor targets.
         reporter("budget", {
-            "role": "Director", "max_steps": gov.max_steps, "max_gpu_hours": gov.max_gpu_hours,
+            "role": "Director", "max_steps": max_steps, "max_gpu_hours": gov.max_gpu_hours,
             "max_cost_usd": gov.max_cost_usd, "max_wall_clock_hours": gov.max_wall_clock_hours,
         })
         agent.run(text)

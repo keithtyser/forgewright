@@ -144,6 +144,7 @@ function interactive(brain) {
           for (let i = 1; i < lines.length; i++) w('  ' + lines[i] + '\n');
         }
         if (obj.role && obj.role !== 'agent') hud.activeRole = obj.role;
+        if (obj.step != null) hud.agentStep = obj.step;     // the enforced agent-loop step budget
         if (obj.usage && obj.usage.total_tokens) hud.tokens = obj.usage.total_tokens;
         break;
       }
@@ -293,7 +294,7 @@ function interactive(brain) {
   const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
   const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
-  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0,
+  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0, agentStep: null,
     pipeline: null, metric: null, budget: null, activeRole: null, lastAction: '' };
   // session provenance graph, accumulated from `artifact` events for /graph
   const sessionGraph = [];
@@ -373,12 +374,13 @@ function interactive(brain) {
       const b = hud.budget;
       const lb2 = lineBuilder(maxw); lb2.add('  ');
       lb2.add('guardrails ', A.dim);
-      if (m && m.step != null && b.max_steps) {
-        const frac = Math.max(0, Math.min(1, m.step / b.max_steps));
+      // the agent-step budget is the one cap that is actually enforced; show it as a live gauge
+      if (hud.agentStep != null && b.max_steps) {
+        const frac = Math.max(0, Math.min(1, hud.agentStep / b.max_steps));
         const W = 10, fill = Math.round(frac * W);
         const near = frac >= 0.85;
         lb2.addRaw((near ? A.yellow : A.green) + '▰'.repeat(fill) + A.r + A.dim + '▱'.repeat(W - fill) + A.r, W);
-        lb2.add(' ' + m.step + '/' + b.max_steps + ' steps', near ? A.yellow : A.dim);
+        lb2.add(' ' + hud.agentStep + '/' + b.max_steps + ' steps', near ? A.yellow : A.dim);
       } else {
         lb2.add('≤' + b.max_steps + ' steps', A.dim);
       }
@@ -424,7 +426,7 @@ function interactive(brain) {
     hud.prevLines = 0;
   }
   function hudResetTurn() {
-    hud.start = Date.now(); hud.i = 0; hud.tokens = 0;
+    hud.start = Date.now(); hud.i = 0; hud.tokens = 0; hud.agentStep = null;
     hud.pipeline = null; hud.metric = null; hud.budget = null; hud.activeRole = null; hud.lastAction = '';
   }
   function startStatus() {

@@ -53,14 +53,23 @@ def parse_metrics(text: str) -> dict:
                 out[norm] = float(mm.group(1))
             except ValueError:
                 pass
-    sm = re.search(r"step\s*[:=]?\s*(\d+)\s*/\s*(\d+)", text, re.I) \
-        or re.search(r"(?<!\d)(\d+)\s*/\s*(\d+)\s*[\[\]]", text)   # tqdm "40/120 ["
-    if sm:
-        out["step"], out["total"] = int(sm.group(1)), int(sm.group(2))
+    explicit = re.search(r"step\s*[:=]?\s*(\d+)\s*/\s*(\d+)", text, re.I)
+    if explicit:
+        out["step"], out["total"] = int(explicit.group(1)), int(explicit.group(2))
     else:
-        sm2 = re.search(r"(?:global_)?step\s*[:=]\s*(\d+)", text, re.I)
-        if sm2:
-            out["step"] = int(sm2.group(1))
+        # A bare tqdm "N/M [" count is only a TRAINING step when a real training signal is
+        # present; otherwise download/load bars ("Fetching 13 files ... 0/13", "Loading
+        # checkpoint shards 0/4") would be mistaken for training progress.
+        bare = re.search(r"(?<!\d)(\d+)\s*/\s*(\d+)\s*[\[\]]", text)
+        has_train = any(k in out for k in ("loss", "reward", "grad_norm", "kl"))
+        noise = re.search(r"fetching|downloading|resolving|checkpoint shards|loading checkpoint|files:",
+                          text, re.I)
+        if bare and has_train and not noise:
+            out["step"], out["total"] = int(bare.group(1)), int(bare.group(2))
+        else:
+            sm2 = re.search(r"(?:global_)?step\s*[:=]\s*(\d+)", text, re.I)
+            if sm2:
+                out["step"] = int(sm2.group(1))
     return out
 
 

@@ -17,10 +17,23 @@ def test_parse_metrics_hf_dict():
     assert m == {"loss": 0.31, "grad_norm": 1.2, "lr": 9e-05, "epoch": 0.5}
 
 
-def test_parse_metrics_tqdm_and_kv():
-    assert parse_metrics("40%|####  | 40/120 [00:10<00:20]") == {"step": 40, "total": 120}
+def test_parse_metrics_tqdm_needs_training_signal():
+    # a bare tqdm bar with NO training signal is not a step (avoids download/load false positives)
+    assert parse_metrics("40%|####  | 40/120 [00:10<00:20]") == {}
+    # but a training bar that carries loss in the same blob is a real step
+    m = parse_metrics("{'loss': 0.31}\n 33%|###  | 40/120 [00:10<00:20, 1.9it/s]")
+    assert m["loss"] == 0.31 and m["step"] == 40 and m["total"] == 120
+
+
+def test_parse_metrics_explicit_step_and_kv():
     m = parse_metrics("step 40/120 loss: 0.31 reward=1.5 kl: 0.02")
     assert m["step"] == 40 and m["total"] == 120 and m["loss"] == 0.31 and m["reward"] == 1.5 and m["kl"] == 0.02
+
+
+def test_parse_metrics_ignores_download_and_shard_bars():
+    # the exact false positive from the field: a HF file-fetch bar must NOT become a step
+    assert parse_metrics("Fetching 13 files:   0%|          | 0/13 [00:00<?, ?it/s]") == {}
+    assert parse_metrics("Loading checkpoint shards:  50%|##   | 2/4 [00:01<00:01]") == {}
 
 
 def test_parse_metrics_none():

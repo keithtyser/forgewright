@@ -170,7 +170,8 @@ class Agent:
             )
             self._emit(
                 "assistant",
-                {"content": turn.content, "tool_calls": [tc.name for tc in turn.tool_calls], "usage": turn.usage},
+                {"step": step, "content": turn.content,
+                 "tool_calls": [tc.name for tc in turn.tool_calls], "usage": turn.usage},
             )
 
             if not turn.tool_calls:
