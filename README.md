@@ -42,9 +42,13 @@ handle to the bytes plus provenance and its gate result); the consumer pulls it 
 **registry**, which doubles as the provenance graph (`register / get / latest / lineage`).
 
 The Director runs named **recipes** (chains over the roster, e.g. `uplift`, `task_grpo`,
-`quantize_serve`, `uplift_publish`, `abliterate`). If a stage's gate fails, the Director
-halts and runs **saga compensations** in reverse, so a regression never flows downstream
-and side effects (like a live served endpoint) get torn down.
+`quantize_serve`, `uplift_publish`, `abliterate`). When a stage's gate fails, the Director
+first runs a bounded **generate → verify → repair** loop (back off the failing knob and retry
+a few times, seeding the retry from a config that passed before); only if repair is exhausted
+does it halt and run **saga compensations** in reverse, so a regression never flows downstream
+and side effects (like a live served endpoint) get torn down. Every gated outcome is written to
+an **outcome memory** that grounds future planning and the repair policies (the swarm learns
+across runs).
 
 From the chat, the conversational agent dispatches the swarm through the `run_recipe` tool:
 you state a goal, the agent picks the recipe + params and hands it to the Director, and the
@@ -174,7 +178,12 @@ as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`), and `/
 full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead.
 
 By default the agent runs until the goal is met (no step-budget hard stop); a repetition
-guard still breaks true dead loops. Set `--max-steps N` for a bounded run if you want one.
+guard plus a **velocity circuit breaker** still break true dead loops. The breaker trips only
+on *no progress per unit cost*: a window of steps/tokens with no successful tool result, so a
+long healthy run never trips while a silent spin is stopped. Tune or disable it with
+`FORGEWRIGHT_BREAKER_IDLE_STEPS` / `_IDLE_TOKENS` / `_IDLE_SECONDS` (0 = off), or set
+`--max-steps N` for a hard bound. A run also **checkpoints** its working state each step, so a
+crashed or stopped autonomous run resumes with `forgewright run --resume <run_id> "<goal>"`.
 
 ## Traces
 

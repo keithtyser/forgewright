@@ -100,16 +100,21 @@ def _seed_kind(goal: str, params: dict) -> Optional[str]:
     return None
 
 
-def plan_stages(goal: str, brain: Any, params: Optional[dict] = None) -> Optional[list[str]]:
+def plan_stages(goal: str, brain: Any, params: Optional[dict] = None, memory: Any = None) -> Optional[list[str]]:
     """Ask the brain for an ordered, type-valid list of specialist roles for the goal.
-    Returns the role list, or None if the brain is unavailable / the plan is invalid."""
+    Returns the role list, or None if the brain is unavailable / the plan is invalid.
+    `memory` (an OutcomeMemory) grounds the plan in what has worked/failed on past runs."""
     if brain is None:
         return None
     params = params or {}
+    user = f"Goal: {goal}\nAvailable seed: {_seed_kind(goal, params) or 'none'}"
+    digest = _memory_digest(memory, params)
+    if digest:
+        user += "\n\n" + digest
     try:
         turn = brain.chat([
             {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": f"Goal: {goal}\nAvailable seed: {_seed_kind(goal, params) or 'none'}"},
+            {"role": "user", "content": user},
         ])
     except Exception:  # noqa: BLE001 - planning must never crash the run; fall back
         return None
@@ -138,10 +143,22 @@ def _parse_roles(content: str) -> list[str]:
     return [r for r in roles if r in SPECIALISTS]
 
 
-def build_plan(goal: str, params: dict, registry, brain: Any) -> Optional[tuple[list[Step], list]]:
+def _memory_digest(memory: Any, params: dict) -> str:
+    """A short outcomes digest for the planner prompt, or '' if there's no usable history."""
+    if memory is None:
+        return None
+    try:
+        return memory.digest(family=params.get("family")) or None
+    except Exception:  # noqa: BLE001 - memory grounding is optional, never fatal
+        return None
+
+
+def build_plan(goal: str, params: dict, registry, brain: Any, memory: Any = None
+               ) -> Optional[tuple[list[Step], list]]:
     """Plan a typed stage chain with the brain and convert it to (steps, seed_inputs) for the
-    Director. Returns None when planning is unavailable/invalid (caller uses the heuristic)."""
-    roles = plan_stages(goal, brain, params)
+    Director. Returns None when planning is unavailable/invalid (caller uses the heuristic).
+    `memory` grounds the plan in past outcomes."""
+    roles = plan_stages(goal, brain, params, memory=memory)
     if not roles:
         return None
     steps = [Step(SPECIALISTS[r], run_kwargs=_run_kwargs(r, params)) for r in roles]

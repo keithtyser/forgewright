@@ -82,7 +82,8 @@ def test_director_emits_structured_pipeline_events(tmp_path):
     assert pipe["stages"] == ["SFTTrainer", "Evaluator"]
 
     stages = [d for k, d in events if k == "stage"]
-    assert stages[0] == {"role": "Director", "name": "SFTTrainer", "index": 0, "total": 2, "state": "active"}
+    assert stages[0] == {"role": "Director", "name": "SFTTrainer", "index": 0, "total": 2,
+                         "state": "active", "attempt": 1}
     assert any(s["name"] == "SFTTrainer" and s["state"] == "done" for s in stages)
 
     # artifacts are attributed to their producer (for per-role coloring), with lineage

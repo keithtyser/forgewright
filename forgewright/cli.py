@@ -20,6 +20,7 @@ import typer
 from rich.console import Console
 
 from forgewright.brain.provider import Brain
+from forgewright.checkpoint import Checkpoint
 from forgewright.config import Settings, parse_brain_arg, parse_hardware_arg
 from forgewright.context.manager import ContextManager
 from forgewright.ledger.ledger import Ledger
@@ -119,6 +120,7 @@ def run(
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions (unattended)."),
     max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps (0 = run until the goal is met)."),
+    resume: Optional[str] = typer.Option(None, "--resume", help="Resume a prior run by its run_id (from its checkpoint)."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
 ) -> None:
     """Run an autonomous post-training goal."""
@@ -130,8 +132,11 @@ def run(
         return typer.confirm(f"Allow {tool.name} ({tool.risk})? args={args}")
 
     policy = PermissionPolicy(ask_fn=None if yes else ask, auto_approve=yes)
-    run_id = time.strftime("run-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
+    # --resume reuses the prior run_id so its checkpoint (working context + step) is picked up;
+    # otherwise a fresh run_id, with a checkpoint written each step so this run is itself resumable.
+    run_id = resume or (time.strftime("run-%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:4])
     ledger = Ledger(run_id, settings.ledger_dir)
+    checkpoint = Checkpoint(run_id)
 
     hw_desc = ", ".join(
         f"{t.name} ({'ssh ' + (t.host or '') if t.kind == 'ssh' else 'local'})" for t in targets if t
@@ -145,6 +150,8 @@ def run(
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
         max_steps=max_steps,
+        checkpoint=checkpoint,
+        resume=bool(resume),
     )
     _bind_swarm(agent, None, policy)   # headless: swarm uses the run's approval policy
     console.print(f"[bold cyan]Forgewright[/] {run_id} · brain={provider.litellm_model()} · hw={hw_desc}")
@@ -153,6 +160,8 @@ def run(
     console.rule("result")
     console.print(result.final or "(no final message)")
     console.print(f"[dim]done={result.done} · steps={result.steps} · ledger={ledger.path}[/]")
+    if not result.done:
+        console.print(f"[dim]resume this run with:[/] forgewright run --resume {run_id} \"{goal}\"")
 
 
 def _format_args(args: dict) -> str:

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from forgewright.brain.provider import Brain, ToolCall
+from forgewright.breaker import CircuitBreaker
+from forgewright.checkpoint import Checkpoint
 from forgewright.context.manager import ContextManager
 from forgewright.ledger.ledger import Ledger
 from forgewright.permissions import PermissionPolicy
@@ -175,6 +177,9 @@ class Agent:
         system_prompt: str = SYSTEM_PROMPT,
         reporter: Optional[Callable[[str, dict], object]] = None,
         interrupt: Optional[Callable[[], bool]] = None,
+        breaker: Optional[CircuitBreaker] = None,
+        checkpoint: Optional[Checkpoint] = None,
+        resume: bool = False,
     ) -> None:
         self.brain = brain
         self.tools = tools
@@ -185,6 +190,12 @@ class Agent:
         self.reporter = reporter
         # cooperative interrupt: checked between steps so the user can stop a run mid-flight
         self.interrupt = interrupt
+        # velocity circuit breaker: the safe budget on an unbounded run - trips only on NO progress
+        # per unit cost, never on healthy long work. env-tunable; pass max_idle_steps=0 to disable.
+        self.breaker = breaker if breaker is not None else CircuitBreaker()
+        # crash-resume: snapshot the working context each step so a re-launch picks up mid-run.
+        self.checkpoint = checkpoint
+        self.resume = resume
         # make compaction model-aware (budget from the brain's context window) + give it a
         # summarizer so long runs condense instead of dropping context.
         try:
@@ -206,21 +217,43 @@ class Agent:
 
     def run(self, goal: str) -> LoopResult:
         """Run one user turn to completion (reuses the persistent context across calls)."""
-        self.ctx.set_pinned(f"Goal: {goal}")   # the goal survives any compaction
-        self.ctx.add_user(goal)
-        self._log("goal", goal=goal)
         recent: list[str] = []
-
-        # max_steps <= 0 means run until the goal is met (no step-budget hard stop); the
-        # doom-loop guard (identical call repeated 3x) is the safety net against dead loops.
         step = 0
+        # the breaker scopes to THIS turn/run: reset its idle window so a long multi-turn chat
+        # never accumulates idle across turns (it only catches a spin within a single run).
+        self.breaker.record_progress()
+        # crash-resume: rehydrate the working context + position from a checkpoint instead of
+        # re-deriving everything. We restore BEFORE seeding the goal so we don't duplicate it.
+        resumed = False
+        if self.resume and self.checkpoint is not None:
+            state = self.checkpoint.load()
+            if state:
+                self.ctx.restore(state.get("ctx") or {})
+                step = int(state.get("step") or 0)
+                recent = list(state.get("recent") or [])
+                resumed = True
+                self._emit("assistant", {"step": step, "content": f"(resumed at step {step})",
+                                         "tool_calls": []})
+        if not resumed:
+            self.ctx.set_pinned(f"Goal: {goal}")   # the goal survives any compaction
+            self.ctx.add_user(goal)
+            self._log("goal", goal=goal)
+
+        # max_steps <= 0 means run until the goal is met (no step-budget hard stop); the doom-loop
+        # guard (identical call 3x) and the velocity circuit breaker are the safety nets.
         while self.max_steps <= 0 or step < self.max_steps:
             if self.interrupt and self.interrupt():
                 self._emit("assistant", {"step": step, "content": "(interrupted)", "tool_calls": []})
                 return LoopResult(False, step, "interrupted")
+            tripped = self.breaker.tripped()
+            if tripped:
+                self._log("breaker", step=step, reason=tripped, **self.breaker.state())
+                self._emit("assistant", {"step": step, "content": tripped, "tool_calls": []})
+                return LoopResult(False, step, tripped)
             step += 1
             turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
             self.ctx.add_assistant(turn)
+            self.breaker.record_step(int((turn.usage or {}).get("total_tokens", 0)))
             self._log(
                 "assistant",
                 step=step,
@@ -235,10 +268,14 @@ class Agent:
             )
 
             if not turn.tool_calls:
+                if self.checkpoint is not None:
+                    self.checkpoint.clear()   # clean finish: no resume state to keep
                 return LoopResult(True, step, turn.content)
 
+            made_progress = False
             for tc in turn.tool_calls:
                 result = self._dispatch(tc, recent)
+                made_progress = made_progress or result.ok   # a successful tool result = the run advanced
                 self.ctx.add_tool_result(tc, result)
                 self._log(
                     "tool",
@@ -252,9 +289,21 @@ class Agent:
                     "tool",
                     {"tool": tc.name, "args": tc.arguments, "ok": result.ok, "output": result.output},
                 )
+            if made_progress:
+                self.breaker.record_progress()   # reset the idle window - value was produced
             self.ctx.maybe_compact()
+            self._save_checkpoint(step, recent)
 
         return LoopResult(False, step, "step budget exhausted")
+
+    def _save_checkpoint(self, step: int, recent: list[str]) -> None:
+        """Persist the working context + loop position for crash-resume (best-effort)."""
+        if self.checkpoint is None:
+            return
+        try:
+            self.checkpoint.save({"step": step, "recent": recent[-10:], "ctx": self.ctx.snapshot()})
+        except Exception:  # noqa: BLE001 - checkpointing never breaks the loop
+            pass
 
     def _dispatch(self, tc: ToolCall, recent: list[str]) -> ToolResult:
         tool = self.tools.get(tc.name)

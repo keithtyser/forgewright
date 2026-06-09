@@ -91,6 +91,20 @@ class ContextManager:
         """A note kept at the top of context and never elided (e.g. the goal + active artifacts)."""
         self._pinned = {"role": "user", "content": "[pinned context]\n" + text} if text else None
 
+    # --- checkpoint/resume -----------------------------------------------------------
+    def snapshot(self) -> dict[str, Any]:
+        """Serialize the working state (pinned + running summary + live turns) for a checkpoint.
+        The system prompt is fixed at construction, so it is not snapshotted."""
+        return {"pinned": self._pinned, "summary": self._summary, "msgs": self._msgs}
+
+    def restore(self, state: dict[str, Any]) -> None:
+        """Rehydrate the working state from a snapshot (used on resume)."""
+        if not state:
+            return
+        self._pinned = state.get("pinned")
+        self._summary = state.get("summary")
+        self._msgs = list(state.get("msgs") or [])
+
     def _resolve_budget(self, model: Optional[str], override: Optional[int]) -> int:
         win = override or model_input_window(model)
         if not win:

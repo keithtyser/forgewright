@@ -27,7 +27,7 @@ def uplift(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
     return [
         Step(DataCurator, run_kwargs={"mode": "curate_seed", "seed_paths": list(seed_paths),
              "family": family, "source": source, "run_name": f"{family}_uplift", "holdout": holdout}),
-        Step(SFTTrainer, run_kwargs={"max_steps": max_steps}),
+        Step(SFTTrainer, run_kwargs={"max_steps": max_steps}, max_attempts=2),
         Step(Evaluator, run_kwargs={"holdout": holdout}),
     ], []
 
@@ -36,7 +36,7 @@ def task_grpo(*, family: str, source: str, dataset: Artifact, holdout: str,
               max_steps: int = 120) -> tuple[list[Step], list[Artifact]]:
     """GRPO/RLVR on a verifiable {prompt,answer} dataset -> held-out eval gate."""
     return [
-        Step(RLTrainer, run_kwargs={"max_steps": max_steps}),
+        Step(RLTrainer, run_kwargs={"max_steps": max_steps}, max_attempts=2),
         Step(Evaluator, run_kwargs={"holdout": holdout}),
     ], [dataset]
 
@@ -61,7 +61,7 @@ def quantize_serve(*, model: ModelArtifact, objective: str = "latency") -> tuple
 
 def abliterate(*, model: ModelArtifact, strength: float = 3.0) -> tuple[list[Step], list[Artifact]]:
     """Refusal-direction abliteration of an existing model (Evaluator model-gate is a follow-on)."""
-    return [Step(Abliterator, run_kwargs={"strength": strength})], [model]
+    return [Step(Abliterator, run_kwargs={"strength": strength}, max_attempts=3)], [model]
 
 
 def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
@@ -73,10 +73,10 @@ def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
     return [
         Step(DataCurator, run_kwargs={"mode": "curate_seed", "seed_paths": list(seed_paths),
              "family": family, "source": source, "run_name": f"{family}_uplift", "holdout": holdout}),
-        Step(SFTTrainer, run_kwargs={"max_steps": max_steps}),
+        Step(SFTTrainer, run_kwargs={"max_steps": max_steps}, max_attempts=2),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 1) uplift quality
         Step(Merger),
-        Step(Abliterator, run_kwargs={"strength": strength}),
+        Step(Abliterator, run_kwargs={"strength": strength}, max_attempts=3),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 2) refusal drop + capability hold
         Step(Quantizer),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 3) quant quality retention

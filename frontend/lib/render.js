@@ -91,7 +91,14 @@ function formatEvent(obj) {
     case 'stage': {
       if (obj.state === 'done') return [{ text: '✓ ' + obj.name + ' complete', color: 'green' }];
       if (obj.state === 'failed') return [{ text: '✗ ' + obj.name + ' failed', color: 'red' }];
+      if (obj.state === 'retry') return [{ text: '↻ ' + obj.name + ' retry (attempt ' + (obj.attempt || '?') + ')', color: 'yellow' }];
       return [];   // 'active' is shown live in the HUD, not the transcript
+    }
+    case 'repair': {
+      const ch = obj.changes && typeof obj.changes === 'object'
+        ? Object.keys(obj.changes).map((k) => k + '=' + obj.changes[k]).join(', ') : '';
+      const why = obj.reason ? '  (' + clip(obj.reason, 80) + ')' : '';
+      return [{ text: '↻ repair ' + (obj.name || '') + ': ' + ch + why, color: 'yellow' }];
     }
     case 'artifact': {
       const par = Array.isArray(obj.parents) && obj.parents.length

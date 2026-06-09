@@ -13,6 +13,7 @@ import json
 from typing import Any, Optional
 
 from forgewright.agents.director import Director
+from forgewright.agents.memory import OutcomeMemory
 from forgewright.agents.recipes import RECIPES, build_recipe, plan_recipe_name
 from forgewright.contracts import DatasetArtifact, ModelArtifact
 from forgewright.registry import Registry
@@ -84,6 +85,7 @@ class RunRecipeTool(Tool):
         self.forge = forge or ForgeRunner()
         self.host = host
         self.brain = brain   # used to LLM-plan a stage chain for 'auto'/novel goals
+        self.memory = OutcomeMemory()   # cross-run learning loop (grounds planning + repair)
         # bound by the CLI each turn so the swarm streams into the one transcript + uses the gate
         self.reporter = None
         self.permissions = None
@@ -116,7 +118,7 @@ class RunRecipeTool(Tool):
             steps = seed = None
             try:
                 from forgewright.agents.planner import build_plan
-                planned = build_plan(goal or recipe, params, self.registry, self.brain)
+                planned = build_plan(goal or recipe, params, self.registry, self.brain, self.memory)
                 if planned:
                     steps, seed = planned
                     self._note(f"planned {len(steps)}-stage swarm: "
@@ -136,7 +138,8 @@ class RunRecipeTool(Tool):
             except Exception as e:  # noqa: BLE001
                 return ToolResult(False, f"recipe setup failed: {e}")
         director = Director(registry=self.registry, reporter=self.reporter,
-                            permissions=self.permissions, host=self.host)
+                            permissions=self.permissions, host=self.host,
+                            brain=self.brain, memory=self.memory)
         res = director.run_recipe(goal or recipe, steps, seed)
         lineage = [f"{a.kind}:{a.id}" for a in res.artifacts]
         summary = (f"recipe '{recipe}' {'completed' if res.ok else 'HALTED at ' + res.failed_at}: "
