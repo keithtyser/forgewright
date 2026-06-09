@@ -234,45 +234,65 @@ function interactive(brain) {
     }
   }
 
-  // /graph: draw the session's provenance DAG as an indented tree (roots -> children).
+  // A clean rounded panel (terminal-kit-style framing) for trusted, self-contained UI: a top
+  // rule with a colored title, side-bordered body, bottom rule. `lines` are ANSI strings; width
+  // is measured by visible length (ANSI codes stripped) and content is clipped to fit.
+  const ESC = /\x1b\[[0-9;]*m/g;
+  const vlen = (s) => String(s).replace(ESC, '').length;
+  const vclip = (s, n) => (vlen(s) <= n ? s : s.replace(ESC, '').slice(0, n - 1) + '…');  // clip plain
+  function panel(title, lines, accent) {
+    accent = accent || '\x1b[96m';
+    const maxw = Math.max(28, (term.width || 80) - 2);
+    const inner = Math.min(maxw - 2, Math.max(vlen(title) + 4, ...lines.map(vlen), 28));
+    const dash = Math.max(1, inner - vlen(title) - 2);
+    w('\n' + accent + '╭─ ' + A.r + A.b + title + A.r + ' ' + accent + '─'.repeat(dash) + '╮' + A.r + '\n');
+    for (const ln of lines) {
+      const body = vlen(ln) > inner ? vclip(ln, inner) : ln;
+      w(accent + '│ ' + A.r + body + ' '.repeat(Math.max(0, inner - vlen(body))) + accent + ' │' + A.r + '\n');
+    }
+    w(accent + '╰' + '─'.repeat(inner + 2) + '╯' + A.r + '\n');
+  }
+
+  // /graph: the session's provenance DAG as an indented tree (roots -> children), in a panel.
   function renderGraph(nodes) {
-    if (!nodes.length) { w('\n' + A.dim + '  no artifacts in the registry yet.' + A.r + '\n'); return; }
+    if (!nodes.length) { panel('provenance graph', [A.dim + 'no artifacts in the registry yet.' + A.r]); return; }
     const byId = {}; nodes.forEach((n) => { byId[n.id] = n; });
     const kidsOf = {}; nodes.forEach((n) => (n.parents || []).forEach((p) => { (kidsOf[p] = kidsOf[p] || []).push(n.id); }));
-    const isRoot = (n) => !(n.parents || []).some((p) => byId[p]);
-    const roots = nodes.filter(isRoot);
-    w('\n' + A.b + '  provenance graph' + A.r + A.dim + '  (' + nodes.length + ' artifacts)' + A.r + '\n');
+    const roots = nodes.filter((n) => !(n.parents || []).some((p) => byId[p]));
     const seen = new Set();
-    const line = (n, prefix, connector) => {
+    const out = [];
+    const fmt = (n, prefix, connector) => {
       const col = roleDot(n.produced_by || '');
       const tag = n.passed === false ? A.red + ' ✗' + A.r : (n.passed === true ? A.green + ' ✓' + A.r : '');
       const score = (n.score != null) ? A.dim + '  ' + (Math.round(n.score * 1000) / 1000) + A.r : '';
       const by = n.produced_by ? A.dim + ' · ' + n.produced_by + A.r : '';
-      w('  ' + A.dim + prefix + connector + A.r + col + n.kind + A.r + A.dim + '#' + shortId(n.id) + A.r + by + score + tag + '\n');
+      return A.dim + prefix + connector + A.r + col + n.kind + A.r + A.dim + '#' + shortId(n.id) + A.r + by + score + tag;
     };
     const walk = (id, prefix, isLast, depth) => {
       if (seen.has(id)) return; seen.add(id);
       const n = byId[id]; if (!n) return;
-      line(n, prefix, depth === 0 ? '' : (isLast ? '└─ ' : '├─ '));
+      out.push(fmt(n, prefix, depth === 0 ? '' : (isLast ? '└─ ' : '├─ ')));
       const kids = (kidsOf[id] || []).filter((k) => byId[k]);
       const childPrefix = prefix + (depth === 0 ? '' : (isLast ? '   ' : '│  '));
       kids.forEach((k, i) => walk(k, childPrefix, i === kids.length - 1, depth + 1));
     };
     roots.forEach((r, i) => walk(r.id, '', i === roots.length - 1, 0));
-    nodes.forEach((n) => { if (!seen.has(n.id)) line(n, '', ''); });   // orphans (parents off-window)
+    nodes.forEach((n) => { if (!seen.has(n.id)) out.push(fmt(n, '', '')); });
+    panel('provenance graph  (' + nodes.length + ' artifacts)', out);
   }
 
   // /models: list models, marking the current one; falls back to the curated Codex list.
   function renderModels(obj) {
     const cur = obj.current || currentBrain || '';
-    w('\n' + A.b + '  models' + A.r + (obj.source ? A.dim + '  (' + obj.source + ')' + A.r : '') + '\n');
     let list = Array.isArray(obj.available) ? obj.available : [];
-    if (obj.note) w('  ' + A.dim + obj.note + A.r + '\n');
-    if (!list.length && obj.source === 'error') { w('  ' + A.dim + 'curated fallback:' + A.r + '\n'); list = CODEX_MODELS; }
+    const out = [];
+    if (obj.note) out.push(A.dim + obj.note + A.r);
+    if (!list.length && obj.source === 'error') { out.push(A.dim + 'curated fallback:' + A.r); list = CODEX_MODELS; }
     list.forEach((mid) => {
       const isCur = cur && (cur === mid || cur.endsWith(':' + mid));
-      w('  ' + (isCur ? A.green + '● ' : A.dim + '· ') + A.r + (isCur ? A.green + mid + ' (current)' + A.r : mid) + '\n');
+      out.push((isCur ? A.green + '● ' + mid + ' (current)' + A.r : A.dim + '· ' + A.r + mid));
     });
+    panel('models' + (obj.source ? '  (' + obj.source + ')' : ''), out.length ? out : [A.dim + '(none)' + A.r]);
   }
 
   // backend (spawned after the brain is configured; can be restarted by /login)
@@ -405,10 +425,14 @@ function interactive(brain) {
   let inMenu = false;    // a terminal-kit modal (approval menu / wizard) owns the keys + screen
   let lastCtrlC = 0;
 
-  function boxTop(width, label) {
-    if (!label) return '─'.repeat(Math.max(0, width));
-    const tail = ' ' + label + ' ──';
-    return tail.length >= width ? '─'.repeat(Math.max(0, width)) : '─'.repeat(width - tail.length) + tail;
+  const _ACCENT = '\x1b[96m';
+  function boxTop(width, label) {           // rounded top rule with the brain label
+    if (!label) return _ACCENT + '╭' + '─'.repeat(Math.max(0, width - 2)) + '╮' + A.r;
+    const dashes = Math.max(1, width - vlen(label) - 5);
+    return _ACCENT + '╭─ ' + A.r + A.dim + label + A.r + ' ' + _ACCENT + '─'.repeat(dashes) + '╮' + A.r;
+  }
+  function boxBottom(width) {
+    return _ACCENT + '╰' + '─'.repeat(Math.max(0, width - 2)) + '╯' + A.r;
   }
   function displayBuf() {                  // tail-clip a long line so the box never wraps
     const max = Math.max(8, (term.width || 80) - 4);
@@ -424,9 +448,9 @@ function interactive(brain) {
            (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r]
         : hudLines();
     }
-    head.push(A.dim + boxTop(width, currentBrain || '') + A.r);
+    head.push(boxTop(width, currentBrain || ''));
     head.push(A.green + A.b + '❯ ' + A.r + displayBuf());
-    head.push(A.dim + '─'.repeat(width) + A.r);
+    head.push(boxBottom(width));
     return head;
   }
   function positionCaret() {               // from end of bottom rule -> into the input line
