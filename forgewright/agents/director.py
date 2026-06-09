@@ -93,107 +93,144 @@ class Director:
     def run_recipe(
         self, goal: str, recipe: Sequence[Step], seed_inputs: Optional[Sequence[Artifact]] = None
     ) -> DirectorResult:
-        """Execute the chain: each step consumes the previous step's output (or the seed for
-        the first), gated globally. Returns the produced artifacts (lineage) + final."""
+        """Execute the chain, gated globally, with a two-level generate -> verify -> repair loop:
+
+          1. SELF-REPAIR: a stage that fails its OWN gate is re-run with repaired run_kwargs, up to
+             its max_attempts (e.g. an abliterate that did not write fresh weights, a quant export
+             that crashed).
+          2. UPSTREAM-REPAIR: when a GATE stage (an Evaluator) fails, the transform that produced
+             the artifact it evaluated is re-run with repaired params, then re-evaluated. This is
+             how a quality regression flows back to its cause -- a quantized model that fails the
+             quality gate re-quantizes LESS aggressively (keeping the requested method), an
+             abliteration that regressed capability re-runs at lower strength -- instead of giving
+             up. The transform's max_attempts bounds the recovery.
+
+        Returns the produced artifacts (lineage) + final."""
         current: list[Artifact] = list(seed_inputs or [])
         produced: list[Artifact] = []
-        completed: list[tuple[Step, Artifact]] = []   # for saga compensation
+        completed: list[tuple[Step, Artifact, int]] = []   # (step, art, idx) of stages that PASSED
+        inputs_at: dict[int, list[Artifact]] = {}          # idx -> the `current` list when it ran
+        attempts: dict[int, int] = {}                      # idx -> attempts used (self + upstream)
         stages = [s.specialist_cls.role for s in recipe]
         total = len(recipe)
         # the full pipeline up front, so the UI can render a live progress map of the swarm.
         self._emit("pipeline", stages=stages, goal=goal)
 
-        for i, step in enumerate(recipe):
+        i = 0
+        while i < len(recipe):
+            step = recipe[i]
             role = step.specialist_cls.role
-            art, ok, reason = self._run_step_with_repair(step, current, goal, i, total)
+            attempt = attempts.get(i, 0) + 1
+            attempts[i] = attempt
+            inputs_at[i] = list(current)
+            art, passed = self._run_attempt(step, current, goal, i, total, attempt)
             if art is not None:
                 produced.append(art)
-            if not ok:
-                self._emit("stage", name=role, index=i, total=total, state="failed")
-                self._emit("assistant", content=f"GLOBAL GATE halt at {role}: {reason}")
-                self._compensate(completed)   # roll back the steps that DID complete
-                return DirectorResult(False, produced, failed_at=role, reason=reason)
-            self._emit("stage", name=role, index=i, total=total, state="done")
-            completed.append((step, art))
-            # A gate (Evaluator -> eval report) passes the evaluated artifact through, so a later
-            # stage (e.g. Publisher) receives the model/adapter that passed, not the report itself.
-            if art.kind != "eval":
-                current = [art]
+            if passed:
+                self._emit("stage", name=role, index=i, total=total, state="done")
+                completed.append((step, art, i))
+                # A gate (Evaluator -> eval report) passes the evaluated artifact through, so a
+                # later stage receives the model/adapter that passed, not the report itself.
+                if art.kind != "eval":
+                    current = [art]
+                i += 1
+                continue
+
+            reason = (art.gate.verdict if (art is not None and art.gate) else "failed")
+            # 1) self-repair this stage
+            if self._try_repair(step, attempt, art, role, upstream=False):
+                current = inputs_at[i]            # re-run the same stage with adjusted kwargs
+                continue
+            # 2) upstream-repair: re-run the transform that produced what this gate evaluated
+            j = self._upstream_transform(completed)
+            if j is not None and self._try_repair(recipe[j], attempts.get(j, 1), art,
+                                                  recipe[j].specialist_cls.role, upstream=True):
+                completed = [(s, a, k) for (s, a, k) in completed if k < j]   # rewind
+                current = inputs_at[j]
+                i = j
+                continue
+            # 3) give up honestly
+            self._emit("stage", name=role, index=i, total=total, state="failed")
+            self._emit("assistant", content=f"GLOBAL GATE halt at {role}: {reason}")
+            self._compensate([(s, a) for (s, a, _k) in completed])
+            return DirectorResult(False, produced, failed_at=role, reason=reason)
 
         final = produced[-1] if produced else None
         self._emit("assistant", content=f"recipe complete: {len(produced)} artifacts, "
                    f"lineage {[a.id for a in produced]}")
         return DirectorResult(True, produced, final=final)
 
-    def _run_step_with_repair(self, step: Step, current, goal: str, i: int, total: int):
-        """Run one stage with the generate -> verify -> repair loop. Returns (artifact, ok, reason).
-        On a gate failure (or a raised stage) it re-runs up to step.max_attempts, calling the repair
-        policy to adjust run_kwargs between tries and feeding the failure reason back into the goal.
-        The outcome of every attempt is recorded to memory for the cross-run learning loop."""
+    def _run_attempt(self, step: Step, current, goal: str, i: int, total: int, attempt: int):
+        """Run ONE attempt of a stage. Returns (artifact, passed). Emits stage/artifact events and
+        records the outcome; a raised stage becomes a failed-gate artifact so the caller can repair
+        it uniformly."""
         from forgewright.contracts import Gate  # local import: contracts has no director dependency
 
         role = step.specialist_cls.role
-        attempts = max(1, step.max_attempts)
-        repair = step.repair or (policy_for(role) if attempts > 1 else None)
-        run_kwargs = dict(step.run_kwargs)
-        family = run_kwargs.get("family") or (current[0].meta.get("family") if current else "") or ""
-        last_real: Optional[Artifact] = None
-        last_reason = ""
-
-        for attempt in range(1, attempts + 1):
-            state = "active" if attempt == 1 else "retry"
-            self._emit("stage", name=role, index=i, total=total, state=state, attempt=attempt)
-            spec = step.specialist_cls(
-                registry=self.registry,
-                reporter=self._base_reporter,   # specialists self-label; one transcript
-                permissions=self.permissions,   # all approvals bubble to the one prompt
-                ledger=self.ledger,
-                brain=self.brain,
-                host=self.host,
-                **step.init_kwargs,
+        self._emit("stage", name=role, index=i, total=total,
+                   state=("active" if attempt == 1 else "retry"), attempt=attempt)
+        family = step.run_kwargs.get("family") or (current[0].meta.get("family") if current else "") or ""
+        spec = step.specialist_cls(
+            registry=self.registry,
+            reporter=self._base_reporter,   # specialists self-label; one transcript
+            permissions=self.permissions,   # all approvals bubble to the one prompt
+            ledger=self.ledger,
+            brain=self.brain,
+            host=self.host,
+            **step.init_kwargs,
+        )
+        eff_goal = goal if attempt == 1 else (
+            f"{goal}\n[repair attempt {attempt}: the previous attempt failed; "
+            f"adjusted parameters: {step.run_kwargs}.]")
+        raised = False
+        try:
+            art = spec.run(current, eff_goal, **step.run_kwargs)
+        except Exception as e:  # noqa: BLE001 - surface the failing stage, don't crash the chain
+            raised = True
+            self._emit("tool", tool=role, ok=False, output=f"error: {e}")
+            art = Artifact(
+                kind=(step.specialist_cls.produces or "model"), produced_by=role,
+                parents=[a.id for a in current], meta={"family": family},
+                gate=Gate(passed=False, metrics={}, verdict=f"raised: {e}"),
             )
-            eff_goal = goal if attempt == 1 else (
-                f"{goal}\n[repair attempt {attempt}/{attempts}: the previous attempt failed -> "
-                f"{last_reason}. Adjusted parameters: {run_kwargs}.]")
-            raised = False
-            try:
-                art = spec.run(current, eff_goal, **run_kwargs)
-            except Exception as e:  # noqa: BLE001 - a raised stage becomes a failed-gate artifact
-                raised = True
-                last_reason = str(e)
-                self._emit("tool", tool=role, ok=False, output=f"error: {e}")
-                art = Artifact(
-                    kind=(step.specialist_cls.produces or "model"), produced_by=role,
-                    parents=[a.id for a in current], meta={"family": family},
-                    gate=Gate(passed=False, metrics={}, verdict=f"raised: {e}"),
-                )
 
-            gate_passed = art.gate.passed if art.gate is not None else None
-            gate_metrics = art.gate.metrics if art.gate is not None else {}
-            verdict = art.gate.verdict if art.gate is not None else ""
-            if not raised:
-                last_real = art
-                self._emit(
-                    "artifact", role=art.produced_by or role, kind=art.kind, id=art.id,
-                    parents=list(art.parents), metrics=gate_metrics, passed=gate_passed,
-                )
-            self._record_outcome(role, family, run_kwargs, gate_passed, gate_metrics, verdict,
-                                 ("" if raised else art.id), attempt)
+        gate_passed = art.gate.passed if art.gate is not None else None
+        gate_metrics = art.gate.metrics if art.gate is not None else {}
+        verdict = art.gate.verdict if art.gate is not None else ""
+        if not raised:
+            self._emit("artifact", role=art.produced_by or role, kind=art.kind, id=art.id,
+                       parents=list(art.parents), metrics=gate_metrics, passed=gate_passed)
+        self._record_outcome(role, family, step.run_kwargs, gate_passed, gate_metrics, verdict,
+                             ("" if raised else art.id), attempt)
+        return art, (art.gate is None or art.gate.passed)
 
-            if art.gate is None or art.gate.passed:
-                return art, True, ""   # ungated stage or a clean pass
+    def _try_repair(self, step: Step, attempt_used: int, failed_art: Artifact, role: str,
+                    *, upstream: bool) -> bool:
+        """Attempt to repair `step` (mutating its run_kwargs in place) given a failure. Returns True
+        if a repair was applied (so the caller re-runs), False if no budget/policy or the policy gave
+        up. `failed_art` carries the failure that motivates the repair (for upstream-repair it is the
+        gate stage's artifact -- its verdict says WHY)."""
+        repair = step.repair or (policy_for(step.specialist_cls.role) if step.max_attempts > 1 else None)
+        if repair is None or attempt_used >= step.max_attempts:
+            return False
+        new_kwargs = self._invoke_repair(repair, attempt_used + 1, failed_art, dict(step.run_kwargs))
+        if new_kwargs is None:
+            self._emit("assistant", content=f"{role} repair gave up after attempt {attempt_used}")
+            return False
+        self._emit("repair", name=role, attempt=attempt_used + 1, upstream=upstream,
+                   reason=(failed_art.gate.verdict if (failed_art and failed_art.gate) else ""),
+                   changes=self._diff(step.run_kwargs, new_kwargs))
+        step.run_kwargs = new_kwargs
+        return True
 
-            last_reason = verdict or last_reason
-            if attempt < attempts and repair is not None:
-                new_kwargs = self._invoke_repair(repair, attempt + 1, art, run_kwargs)
-                if new_kwargs is None:
-                    self._emit("assistant", content=f"{role} repair gave up after attempt {attempt}")
-                    break
-                self._emit("repair", name=role, attempt=attempt + 1, reason=last_reason,
-                           changes=self._diff(run_kwargs, new_kwargs))
-                run_kwargs = new_kwargs
-
-        return last_real, False, last_reason
+    @staticmethod
+    def _upstream_transform(completed: "list[tuple[Step, Artifact, int]]") -> Optional[int]:
+        """The index of the most recent completed TRANSFORM (non-eval) stage -- the producer of the
+        artifact a failing gate just evaluated. None if there is no upstream transform to repair."""
+        for step, _art, idx in reversed(completed):
+            if step.specialist_cls.produces != "eval":
+                return idx
+        return None
 
     def _invoke_repair(self, repair, attempt: int, art: Artifact, run_kwargs: dict):
         """Call a repair policy defensively - a buggy policy must not crash the run (treat an error

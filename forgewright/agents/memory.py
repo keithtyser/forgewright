@@ -25,7 +25,8 @@ def _default_path() -> Path:
     return base / "memory" / "outcomes.jsonl"
 
 # the hyperparameters worth remembering per stage (what a repair policy would tune)
-_TUNABLES = ("strength", "layer_skip_first", "layer_skip_last", "max_steps", "method", "objective")
+_TUNABLES = ("strength", "layer_skip_first", "layer_skip_last", "max_steps", "method", "objective",
+             "calib_samples", "keep_kv_high_precision", "extra_exclusions", "min_speedup")
 
 
 class OutcomeMemory:

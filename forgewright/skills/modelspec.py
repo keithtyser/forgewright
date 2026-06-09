@@ -8,6 +8,7 @@ qwen-family naming. Returns None when introspection is unavailable (caller falls
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Optional
 
 
@@ -15,6 +16,10 @@ def model_spec(runner: Any, path: str) -> Optional[dict]:
     """Return the ModelSpec dict for ``path`` via `forge model describe --json`, or None."""
     if runner is None or not path:
         return None
+    # `forge` runs via `bash forge <argv>` (no shell), so a leading ~ is NOT expanded and model-forge
+    # then can't find the checkpoint. Expand it here for the common local-box case.
+    if path.startswith("~"):
+        path = os.path.expanduser(path)
     try:
         res = runner.run(f"model describe {path} --json")
     except Exception:  # noqa: BLE001

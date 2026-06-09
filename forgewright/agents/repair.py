@@ -84,11 +84,59 @@ def finetune_repair(attempt: int, artifact: Artifact, run_kwargs: dict, memory=N
     return kw
 
 
+# nvfp4 is the most aggressive; step DOWN only when no method was pinned.
+_QUANT_METHOD_LADDER = {"nvfp4": "fp8", "fp8": "int8", "int8": "awq"}
+
+
+def quantize_repair(attempt: int, artifact: Artifact, run_kwargs: dict, memory=None) -> Optional[dict]:
+    """Recover quant QUALITY while KEEPING the requested method (the user picked it for their
+    hardware -- we do not silently swap NVFP4 for something else). Each rung keeps more of the model
+    in higher precision / improves calibration, trading a little speedup for accuracy (the user
+    accepts a minimal perf drop). The method is only stepped DOWN when none was pinned (or fallback
+    is explicitly allowed) AND the within-method ladder is exhausted; otherwise we stop honestly."""
+    kw = dict(run_kwargs)
+    excl = list(kw.get("extra_exclusions") or [])
+
+    def add(*mods):
+        for m in mods:
+            if m not in excl:
+                excl.append(m)
+
+    if attempt == 2:
+        # cheapest, highest-yield: better calibration + keep the KV cache in high precision
+        # (recovers JSON/format adherence and refusal-boundary metrics first).
+        kw["calib_samples"] = max(int(kw.get("calib_samples") or 256), 512)
+        kw["keep_kv_high_precision"] = True
+        return kw
+    if attempt == 3:
+        # keep the quality-sensitive projections in higher precision (mixed precision)
+        add("down_proj", "o_proj")
+        kw.update(extra_exclusions=excl, keep_kv_high_precision=True,
+                  calib_samples=max(int(kw.get("calib_samples") or 256), 512),
+                  min_speedup=min(float(kw.get("min_speedup") or 1.3), 1.2))
+        return kw
+    if attempt == 4:
+        # also keep the most sensitive (first) decoder blocks in higher precision
+        add("down_proj", "o_proj", "model.layers.0.", "model.layers.1.")
+        kw.update(extra_exclusions=excl, keep_kv_high_precision=True,
+                  calib_samples=max(int(kw.get("calib_samples") or 256), 768),
+                  min_speedup=min(float(kw.get("min_speedup") or 1.3), 1.15))
+        return kw
+    # within-method recovery exhausted: switch method only if NOT pinned (or fallback allowed)
+    pinned = bool(run_kwargs.get("method")) and not run_kwargs.get("allow_method_fallback")
+    if not pinned:
+        nxt = _QUANT_METHOD_LADDER.get(kw.get("method") or "nvfp4")
+        if nxt:
+            return {**kw, "method": nxt, "extra_exclusions": [], "keep_kv_high_precision": False}
+    return None  # pinned method, ladder exhausted -> stop honestly (we tried hard)
+
+
 # stage role -> default repair policy (recipes opt a step in by setting max_attempts > 1)
 DEFAULT_POLICIES = {
     "Abliterator": abliterate_repair,
     "SFTTrainer": finetune_repair,
     "RLTrainer": finetune_repair,
+    "Quantizer": quantize_repair,
 }
 
 

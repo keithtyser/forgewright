@@ -50,10 +50,14 @@ def uplift_publish(*, family: str, source: str, seed_paths: Sequence[str], holdo
     return steps, seed
 
 
-def quantize_serve(*, model: ModelArtifact, objective: str = "latency") -> tuple[list[Step], list[Artifact]]:
-    """Quantize a model to NVFP4 -> serving-opt (which gates quality vs the source)."""
+def quantize_serve(*, model: ModelArtifact, objective: str = "latency",
+                   method: str | None = None) -> tuple[list[Step], list[Artifact]]:
+    """Quantize a model -> serving-opt (which gates quality vs the source). If `method` is pinned
+    (e.g. nvfp4 for the user's GPU), the Quantizer keeps it and the repair loop recovers quality
+    within that method rather than switching."""
+    quant_kwargs = {"method": method} if method else {}
     return [
-        Step(Quantizer),
+        Step(Quantizer, run_kwargs=quant_kwargs, max_attempts=4),
         Step(ServingOptimizer, run_kwargs={"objective": objective},
              compensate=_stop_served_endpoint),
     ], [model]
@@ -65,7 +69,8 @@ def abliterate(*, model: ModelArtifact, strength: float = 3.0) -> tuple[list[Ste
 
 
 def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
-         strength: float = 3.0, max_steps: int = 60) -> tuple[list[Step], list[Artifact]]:
+         strength: float = 3.0, max_steps: int = 60, method: str | None = None
+         ) -> tuple[list[Step], list[Artifact]]:
     """The full pipeline in one run, with an EVAL gate after EVERY transform so a regression can't
     flow downstream: curate -> SFT -> EVAL -> merge -> abliterate -> EVAL -> quantize -> EVAL ->
     serving-opt -> EVAL. (Merge bridges the adapter->model gap; ServingOptimizer also self-evals
@@ -78,7 +83,7 @@ def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
         Step(Merger),
         Step(Abliterator, run_kwargs={"strength": strength}, max_attempts=3),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 2) refusal drop + capability hold
-        Step(Quantizer),
+        Step(Quantizer, run_kwargs=({"method": method} if method else {}), max_attempts=4),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 3) quant quality retention
         Step(ServingOptimizer, run_kwargs={"objective": "latency", "eval_each": True},
              compensate=_stop_served_endpoint),

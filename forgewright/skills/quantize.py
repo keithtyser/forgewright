@@ -33,7 +33,7 @@ calibration:
   batch_size: 4
 exclusions:
   apply_recommended_keep_patterns: true
-  modules: [lm_head, embed_tokens, router, expert]
+  modules: [{exclusion_modules}]
 export:
   image: model-forge-modelopt-nvfp4:0.43.0
   base_image: vllm-node-tf5:latest
@@ -64,7 +64,7 @@ runtime:
   vllm_flags:
     trust_remote_code: true
     quantization: {backend}
-    kv_cache_dtype: fp8
+    kv_cache_dtype: {kv_cache_dtype}
 outputs:
   reports_dir: reports/generated/quantization
   models_dir: ~/models/model-forge-quantized/{family}
@@ -94,6 +94,15 @@ Model-snapshot quirks to auto-fix before export:
  - missing generation_config.json  -> synthesize from config.json bos/eos/pad token ids.
  - non-standard shard names model.safetensors-*-of-*.safetensors  -> rename to model-*-of-*.safetensors AND
    update model.safetensors.index.json weight_map (model-forge globs model-*.safetensors).
+ - Qwen3.5 WRAPPER checkpoint (config architectures = *ForConditionalGeneration, has vision_config, and
+   weight keys are prefixed `model.language_model.*`): the generic ModelOpt hf_ptq loader (int8/awq, and a
+   w8a8 fp8 path) instantiates the TEXT-ONLY *ForCausalLM, which expects `model.layers.*` -> every weight
+   goes unused and stays on `meta` -> "Cannot copy out of meta tensor" crash. For a text-only quant, FLATTEN
+   to a text-only checkpoint FIRST: strip the `model.language_model.` -> `model.` prefix in every weight key
+   (and in model.safetensors.index.json weight_map), and write a text-only config (architectures
+   [<X>ForCausalLM], promote text_config fields to top level, drop vision_config / image_token_id /
+   video_token_id). The arch-tuned nvfp4 script tolerates the wrapper, so this is only needed for the
+   hf_ptq-based methods.
 """
 
 # Architecture -> (ptq strategy, script). Extend as new families are validated.
@@ -122,6 +131,10 @@ def choose_quant_method(supported_quant, requested: str | None = None) -> str | 
     return supported[0] if supported else None
 
 
+# Base modules always kept in higher precision (quality-critical, tiny speed cost).
+_BASE_EXCLUSIONS = ("lm_head", "embed_tokens", "router", "expert")
+
+
 def scaffold_quant_config(
     family: str,
     *,
@@ -133,21 +146,38 @@ def scaffold_quant_config(
     calib_seq: int = 1024,
     port: int = 8000,
     min_speedup: float = 1.3,
+    extra_exclusions: "tuple[str, ...] | list[str]" = (),
+    keep_kv_high_precision: bool = False,
 ) -> str:
     """Render a quant config for ``family`` (speedup-gated). ``method`` is chosen for the GPU's
-    arch (nvfp4/fp8/int8/awq); the backend/qformat/gate are derived from it."""
+    arch (nvfp4/fp8/int8/awq); the backend/qformat/gate are derived from it.
+
+    Quality-recovery knobs (used by the quantize repair policy to keep a pinned method while
+    holding quality): ``extra_exclusions`` keeps more modules/layers in higher precision (mixed
+    precision), ``keep_kv_high_precision`` leaves the KV cache unquantized, and a larger
+    ``calib_samples`` gives ModelOpt better scales. These trade a little speedup for accuracy."""
     backend, qformat, kv_cache_qformat, gate_key = _METHOD_SPEC.get(method, _METHOD_SPEC["nvfp4"])
     # nvfp4/fp8 use the arch-tuned scripts; int8/awq use ModelOpt's generic hf_ptq exporter.
     if method in ("int8", "awq"):
         strategy, script = "hf_ptq", ""
     else:
         strategy, script = _ARCH_STRATEGY.get(arch, _ARCH_STRATEGY["qwen"])
+    if keep_kv_high_precision:
+        kv_cache_qformat, kv_cache_dtype = "none", "auto"
+    else:
+        kv_cache_dtype = "fp8"
+    # de-dupe while preserving order (base keep-list + any extra sensitive modules/layers)
+    modules = list(_BASE_EXCLUSIONS) + [m for m in extra_exclusions if m not in _BASE_EXCLUSIONS]
+    seen: set[str] = set()
+    modules = [m for m in modules if not (m in seen or seen.add(m))]
     return QUANT_CONFIG_TEMPLATE.format(
         family=family,
         method=method,
         backend=backend,
         qformat=qformat,
         kv_cache_qformat=kv_cache_qformat,
+        kv_cache_dtype=kv_cache_dtype,
+        exclusion_modules=", ".join(modules),
         gate_key=gate_key,
         source_variant=source_variant,
         target_variant=target_variant or f"base_{method}_{backend}",

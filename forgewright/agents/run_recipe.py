@@ -50,6 +50,8 @@ def _resolve(recipe: str, params: dict, registry: Registry):
         kw = {"model": model}
         if recipe == "quantize_serve":
             kw["objective"] = p.get("objective", "latency")
+            if p.get("method"):           # honor a pinned quant method (e.g. nvfp4 for the GPU)
+                kw["method"] = p["method"]
         else:
             kw["strength"] = p.get("strength", 3.0)
         return build_recipe(recipe, **kw)

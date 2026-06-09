@@ -52,7 +52,12 @@ class Quantizer(Specialist):
 
     def run(self, inputs: Sequence[Artifact], goal: str = "", *,
             source_variant: str = "base", method: Optional[str] = None,
-            supported_quant: Optional[Sequence[str]] = None) -> Artifact:
+            supported_quant: Optional[Sequence[str]] = None,
+            calib_samples: Optional[int] = None,
+            extra_exclusions: Sequence[str] = (),
+            keep_kv_high_precision: bool = False,
+            min_speedup: Optional[float] = None,
+            allow_method_fallback: bool = False) -> Artifact:
         self.validate_inputs(inputs)
         model = inputs[0]
         family = model.meta.get("family") or "model"
@@ -68,8 +73,19 @@ class Quantizer(Specialist):
             return self._passthrough(model, family, f"NO_QUANT: {chosen} export not yet available (serve bf16)")
 
         target_variant = f"base_{chosen}_modelopt"
-        self._emit("assistant", content=f"{chosen} quantize {model.id} (family {family})")
-        write_quant_config(self.forge.repo, family, method=chosen, arch=self.arch, source_variant=source_variant)
+        # quality-recovery knobs (set by the quantize repair policy on a re-run): keep more in higher
+        # precision / improve calibration to hold quality on the SAME method. overwrite=True so a
+        # repaired re-run actually rewrites the config.
+        recovery = {k: v for k, v in (
+            ("calib_samples", calib_samples), ("min_speedup", min_speedup)) if v is not None}
+        if extra_exclusions:
+            recovery["extra_exclusions"] = tuple(extra_exclusions)
+        if keep_kv_high_precision:
+            recovery["keep_kv_high_precision"] = True
+        note = f" [recovery: {recovery}]" if recovery else ""
+        self._emit("assistant", content=f"{chosen} quantize {model.id} (family {family}){note}")
+        write_quant_config(self.forge.repo, family, method=chosen, arch=self.arch,
+                           source_variant=source_variant, overwrite=True, **recovery)
         cmd = (f"bash forge quantize export {family} {source_variant} "
                f"--config configs/quantization/{quant_config_name(family, chosen)}.yaml --execute")
         rec = self.jobs.launch(cmd, host=self.host, cwd=str(self.forge.repo), name=f"quant-{family}")

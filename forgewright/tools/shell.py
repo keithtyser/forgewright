@@ -1,6 +1,7 @@
 """Local shell execution tool."""
 from __future__ import annotations
 
+import os
 import subprocess
 from typing import Any
 
@@ -25,6 +26,11 @@ class ShellTool(Tool):
     }
 
     def run(self, command: str, timeout: int = 600, cwd: str | None = None, **_: Any) -> ToolResult:
+        if not command or not command.strip():
+            return ToolResult(False, "empty command (nothing to run)", {"error": True})
+        # an empty-string cwd makes subprocess chdir to '' and crash with ENOENT; treat it as unset,
+        # and expand a leading ~ (shell=True does not expand ~ in the cwd argument).
+        cwd = os.path.expanduser(cwd) if (cwd and cwd.strip()) else None
         try:
             proc = subprocess.run(
                 command,
