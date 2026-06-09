@@ -16,54 +16,11 @@ const os = require('os');
 const path = require('path');
 const { formatEvent } = require('./lib/render');
 
-// --- persisted credentials (shared with the Python backend) ------------------------
-// Written by the first-run setup wizard so the user configures their brain once. Same file
-// the backend reads (forgewright/credentials.py): ~/.forgewright/credentials.json.
-const OPENROUTER_DEFAULT_MODEL = 'openrouter:deepseek/deepseek-v4-pro';
-// OpenAI models reachable over the Codex (ChatGPT-login) Responses API, newest first. The
-// wizard offers these plus a free-text "Other" entry, so any model id (including ones newer
-// than this list) still works without a code change.
-const CODEX_MODELS = [
-  'gpt-5.5-codex',
-  'gpt-5.5',
-  'gpt-5.1-codex-max',
-  'gpt-5.1-codex',
-  'gpt-5.1',
-  'gpt-5-codex',
-  'gpt-5',
-  'gpt-5-mini',
-];
-function fwHome() { return process.env.FORGEWRIGHT_HOME || path.join(os.homedir(), '.forgewright'); }
-function credsPath() { return path.join(fwHome(), 'credentials.json'); }
-function codexAuthPath() {
-  const base = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-  return path.join(base, 'auth.json');
-}
-function loadCreds() {
-  try { return JSON.parse(fs.readFileSync(credsPath(), 'utf8')) || {}; } catch (e) { return {}; }
-}
-function saveCreds(creds) {
-  try {
-    fs.mkdirSync(fwHome(), { recursive: true });
-    fs.writeFileSync(credsPath(), JSON.stringify(creds, null, 2), 'utf8');
-    try { fs.chmodSync(credsPath(), 0o600); } catch (e) {}
-  } catch (e) { w(A.red + '  could not save credentials: ' + e.message + A.r + '\n'); }
-}
-function envFromCreds(creds) {
-  const env = {};
-  if (creds.openrouter_api_key) env.OPENROUTER_API_KEY = creds.openrouter_api_key;
-  if (creds.anthropic_api_key) env.ANTHROPIC_API_KEY = creds.anthropic_api_key;
-  if (creds.openai_api_key) env.OPENAI_API_KEY = creds.openai_api_key;
-  return env;
-}
-// Returns { brain, env } if a brain is already configured (flag > saved creds > env), else null.
-function resolveBrainConfig(brainArg) {
-  const creds = loadCreds();
-  const env = envFromCreds(creds);
-  const haveOR = process.env.OPENROUTER_API_KEY || env.OPENROUTER_API_KEY;
-  const brain = brainArg || creds.brain || (haveOR ? OPENROUTER_DEFAULT_MODEL : null);
-  return brain ? { brain, env } : null;
-}
+// persisted credentials + brain resolution (shared with the full-screen UI and the backend)
+const {
+  OPENROUTER_DEFAULT_MODEL, CODEX_MODELS, codexAuthPath, credsPath,
+  loadCreds, saveCreds, resolveBrainConfig,
+} = require('./lib/creds');
 
 // --- ANSI paint (dynamic text goes through here, NOT terminal-kit's term(), so model
 //     output containing ^ or % cannot break the markup) ----------------------------
@@ -717,9 +674,18 @@ function banner(term) {
 }
 
 const argv = process.argv.slice(2);
+const bi = argv.indexOf('--brain');
+const brainArg = bi >= 0 ? argv[bi + 1] : null;
 if (argv.includes('--render-test')) {
   renderTest();
+} else if ((process.env.FORGEWRIGHT_FULLSCREEN === '1' || argv.includes('--fullscreen')) && process.stdout.isTTY) {
+  // opt-in full-screen terminal-kit UI (classic scrolling UI remains the default while it stabilizes)
+  try {
+    require('./fullscreen').run(brainArg);
+  } catch (e) {
+    process.stderr.write('full-screen UI failed (' + e.message + '); falling back to classic.\n');
+    interactive(brainArg);
+  }
 } else {
-  const bi = argv.indexOf('--brain');
-  interactive(bi >= 0 ? argv[bi + 1] : null);
+  interactive(brainArg);
 }
