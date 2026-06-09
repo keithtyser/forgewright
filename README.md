@@ -175,7 +175,14 @@ specialist's stage state), the active specialist, training step/loss/reward with
 elapsed, and tokens. Training telemetry is structured: the backend taps trainer output into
 typed `metric` events the HUD consumes directly. Produced artifacts stream into the transcript
 as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`), and `/graph` draws the
-full session provenance DAG. Set `FORGEWRIGHT_PLAIN=1` for a minimal one-line status instead.
+full session provenance DAG. Each stage and turn shows its duration, and a turn ends with a
+compact summary (`done · 42s · 7 actions · ↑3.1k tok`). Set `FORGEWRIGHT_PLAIN=1` for a minimal
+one-line status instead.
+
+Colors come from one shared theme used by both the scrolling and full-screen front-ends, so they
+never drift. Pick a theme with `FORGEWRIGHT_THEME=dark|light|mono` (`NO_COLOR` forces `mono` for
+piping/accessibility). The full-screen layout (status bar, scrollable transcript, live HUD strip,
+in-app menus) is opt-in via `FORGEWRIGHT_FULLSCREEN=1`.
 
 By default the agent runs until the goal is met (no step-budget hard stop); a repetition
 guard plus a **velocity circuit breaker** still break true dead loops. The breaker trips only

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node forgewright-tui.js",
     "render-test": "node forgewright-tui.js --render-test",
-    "test": "node lib/render.test.js"
+    "test": "node lib/render.test.js && node lib/theme.test.js && node lib/ui.test.js"
   },
   "dependencies": {
     "terminal-kit": "^3.1.2",

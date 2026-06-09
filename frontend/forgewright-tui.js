@@ -14,7 +14,9 @@ const readline = require('readline');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { formatEvent } = require('./lib/render');
+const { formatEvent, roleColor, headlineMetric } = require('./lib/render');
+const { makeTheme } = require('./lib/theme');
+const ui = require('./lib/ui');
 
 // persisted credentials + brain resolution (shared with the full-screen UI and the backend)
 const {
@@ -22,19 +24,14 @@ const {
   loadCreds, saveCreds, resolveBrainConfig,
 } = require('./lib/creds');
 
-// --- ANSI paint (dynamic text goes through here, NOT terminal-kit's term(), so model
-//     output containing ^ or % cannot break the markup) ----------------------------
-const A = { r: '\x1b[0m', b: '\x1b[1m', dim: '\x1b[90m', cyan: '\x1b[36m', green: '\x1b[32m',
-  red: '\x1b[31m', yellow: '\x1b[33m', white: '\x1b[97m' };
-const ROLE_FG = {
-  Director: '\x1b[96m', DataCurator: '\x1b[94m', SFTTrainer: '\x1b[92m', RLTrainer: '\x1b[32m',
-  Abliterator: '\x1b[95m', Quantizer: '\x1b[93m', ServingOptimizer: '\x1b[33m',
-  Evaluator: '\x1b[97m', Publisher: '\x1b[91m',
-};
-const ROLE_BG = {
-  Director: '\x1b[46m', DataCurator: '\x1b[44m', SFTTrainer: '\x1b[42m', RLTrainer: '\x1b[42m',
-  Abliterator: '\x1b[45m', Quantizer: '\x1b[43m', ServingOptimizer: '\x1b[43m',
-  Evaluator: '\x1b[47m', Publisher: '\x1b[41m',
+// --- color: one source of truth (lib/theme), honoring FORGEWRIGHT_THEME / NO_COLOR. Dynamic text
+//     is painted in raw ANSI (never terminal-kit markup) so model output with ^ or % is safe. The
+//     `A` palette + role colors are derived from the theme so 'dark' is byte-identical to before.
+const theme = makeTheme();
+const A = {
+  r: theme.reset, b: theme.bold, dim: theme.ansi('gray'), cyan: theme.ansi('cyan'),
+  green: theme.ansi('green'), red: theme.ansi('red'), yellow: theme.ansi('yellow'),
+  white: theme.ansi('brightWhite'),
 };
 const w = (s) => process.stdout.write(s);
 const clip = (s, n) => { s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
@@ -64,7 +61,7 @@ function interactive(brain) {
     return s.replace(/\s+$/, '').split('\n');
   };
   const dot = (color) => color + '●' + A.r;
-  const roleDot = (role) => ROLE_FG[role] || '\x1b[96m';
+  const roleDot = (role) => theme.ansi(role && roleColor(role) !== 'white' ? roleColor(role) : 'brightCyan');
   const roleLabel = (role) => (role && role !== 'agent') ? A.dim + role + ' ' + A.r : '';
   const primaryArg = (obj) => {
     const a = obj.args;
@@ -94,15 +91,6 @@ function interactive(brain) {
     shown.forEach((l, i) => w('  ' + A.dim + (i === 0 ? '⎿  ' : '   ') + l + A.r + '\n'));
     if (more) w('  ' + A.dim + '   … +' + more + ' more line' + (more === 1 ? '' : 's') + A.r + '\n');
   }
-
-  // pick a headline metric from an artifact's gate metrics (score-like first, else any number)
-  const headlineMetric = (m) => {
-    if (!m || typeof m !== 'object') return null;
-    const pref = ['score', 'accuracy', 'pass_rate', 'refusal_rate_harmful', 'reward', 'loss'];
-    for (const k of pref) if (typeof m[k] === 'number') return [k, m[k]];
-    for (const k of Object.keys(m)) if (typeof m[k] === 'number') return [k, m[k]];
-    return null;
-  };
 
   // Claude-Code-style: `●` action bullets (colored by role/status) with `⎿` result lines, plus
   // swarm-native lines (◆ plan, ◇ artifact lineage). Most cases also update live HUD state.
@@ -146,9 +134,10 @@ function interactive(brain) {
       }
       case 'stage': {
         if (hud.pipeline && hud.pipeline.stages[obj.index]) hud.pipeline.stages[obj.index].state = obj.state;
-        if (obj.state === 'active') { hud.activeRole = obj.name; hud.metric = null; hud.lastAction = ''; }
-        if (obj.state === 'done') w(A.green + '✓' + A.r + ' ' + A.dim + obj.name + ' complete' + A.r + '\n');
-        if (obj.state === 'failed') w(A.red + '✗' + A.r + ' ' + A.red + obj.name + ' failed' + A.r + '\n');
+        if (obj.state === 'active') { hud.activeRole = obj.name; hud.metric = null; hud.lastAction = ''; hud.stageStart = Date.now(); }
+        const sd = (hud.stageStart && obj.state !== 'active') ? A.dim + '  ' + ui.fmtDur(Date.now() - hud.stageStart) + A.r : '';
+        if (obj.state === 'done') w(A.green + '✓' + A.r + ' ' + A.dim + obj.name + ' complete' + A.r + sd + '\n');
+        if (obj.state === 'failed') w(A.red + '✗' + A.r + ' ' + A.red + obj.name + ' failed' + A.r + sd + '\n');
         break;
       }
       case 'artifact': {
@@ -186,7 +175,10 @@ function interactive(brain) {
       case 'models':
         renderModels(obj); break;
       case 'done':
-        if (obj.ok === false) w('\n' + dot(A.red) + ' ' + A.red + clip(obj.error, 400) + A.r + '\n'); break;
+        if (obj.ok === false) { w('\n' + dot(A.red) + ' ' + A.red + clip(obj.error, 400) + A.r + '\n'); break; }
+        // a persistent end-of-turn summary so a scrolled-back run shows its cost at a glance
+        if (hud.actions || hud.tokens) w(ui.paintRowAnsi(ui.runSummary(hud), theme, (term.width || 80) - 1) + '\n');
+        break;
       default: break;
     }
   }
@@ -286,91 +278,32 @@ function interactive(brain) {
   //     It animates by overwriting each line in place (clear-line, never erase-below), so it
   //     does not flicker. Every line is width-budgeted so it never wraps (a wrap would throw
   //     off the fixed-line in-place redraw).
-  const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-  const SPARK = '▁▂▃▄▅▆▇█';
   const PLAIN = !!process.env.FORGEWRIGHT_PLAIN;   // escape hatch: minimal one-line status
-  const hud = { timer: null, start: 0, i: 0, prevLines: 0, tokens: 0, actions: 0,
-    pipeline: null, metric: null, activeRole: null, lastAction: '' };
+  const hud = { timer: null, start: 0, i: 0, tokens: 0, actions: 0,
+    pipeline: null, metric: null, activeRole: null, lastAction: '', stageStart: 0 };
   // session provenance graph, accumulated from `artifact` events for /graph
   const sessionGraph = [];
-  const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
   const shortId = (id) => String(id || '').slice(-6);
-  const sparkline = (a) => {
-    if (!a || a.length < 2) return '';
-    const lo = Math.min.apply(null, a), hi = Math.max.apply(null, a), rng = (hi - lo) || 1;
-    return a.map((v) => SPARK[Math.min(7, Math.floor((v - lo) / rng * 7.999))]).join('');
-  };
-  const stageGlyph = (state, spin) =>
-    state === 'done' ? A.green + '✓' + A.r :
-    state === 'failed' ? A.red + '✗' + A.r :
-    state === 'active' ? '\x1b[35m' + spin + A.r : A.dim + '◌' + A.r;
 
-  // width-budgeted line builder: add(text,color) counts text length; addRaw(s,vis) appends
-  // pre-colored content with an explicit visible width. Truncates to fit maxw.
-  function lineBuilder(maxw) {
-    let vis = 0; const parts = [];
-    return {
-      add(text, color) {
-        if (vis >= maxw) return;
-        let t = String(text == null ? '' : text);
-        if (vis + t.length > maxw) t = t.slice(0, Math.max(0, maxw - vis - 1)) + '…';
-        vis += t.length; parts.push(color ? color + t + A.r : t);
-      },
-      addRaw(s, visLen) { if (vis + visLen <= maxw) { vis += visLen; parts.push(s); } },
-      str() { return parts.join(''); },
-    };
-  }
-
+  // The Swarm HUD, painted from the shared structured model (lib/ui) so it is identical to the
+  // full-screen UI. A blank gap + a "── swarm" rule above the pipeline row + the status row. It
+  // redraws in place (clear-line per row, never erase-below) so it never flickers.
   function hudLines() {
     const maxw = Math.max(24, (term.width || 80) - 1);
-    const spin = GLYPHS[hud.i % GLYPHS.length];
-    const el = Math.round((Date.now() - hud.start) / 1000);
+    const spin = ui.GLYPHS[hud.i % ui.GLYPHS.length];
     const out = [''];                                  // a blank gap above the panel
     const title = '─── swarm ';
     out.push(A.dim + (title + '─'.repeat(Math.max(0, maxw - title.length))).slice(0, maxw) + A.r);
-
-    // pipeline row (only when a recipe is running and the terminal is wide enough)
-    if (hud.pipeline && hud.pipeline.stages.length && maxw >= 40) {
-      const lb = lineBuilder(maxw); lb.add('  ');
-      hud.pipeline.stages.forEach((s, idx) => {
-        if (idx) lb.add('   ');
-        lb.addRaw(stageGlyph(s.state, spin), 1); lb.add(' ');
-        const lit = s.state === 'active' || s.state === 'done' || s.state === 'failed';
-        lb.add(s.name, lit ? roleDot(s.name) : A.dim);
-      });
-      out.push(lb.str());
+    for (const row of ui.hudRows(hud, spin)) {
+      if (row.kind === 'pipeline' && maxw < 40) continue;   // hide the pipeline row on narrow terminals
+      out.push(ui.paintRowAnsi(row.segs, theme, maxw));
     }
-
-    // status row: active specialist · (metrics | last action) · elapsed · tokens
-    const m = hud.metric;
-    const lb = lineBuilder(maxw); lb.add('  ');
-    lb.addRaw('\x1b[35m' + spin + A.r, 1); lb.add(' ');
-    const who = (hud.activeRole && hud.activeRole !== 'agent') ? hud.activeRole : 'working';
-    lb.add(who, roleDot(hud.activeRole || ''));
-    if (m && m.step != null) {
-      lb.add(' · '); lb.add('step ' + m.step + (m.total ? '/' + m.total : ''), A.white);
-    }
-    if (m && m.loss != null) {
-      lb.add(' · '); lb.add('loss ' + fmtNum(m.loss), A.dim);
-      const sp = sparkline(m.histLoss); if (sp) { lb.add(' '); lb.addRaw(A.cyan + sp + A.r, sp.length); }
-    }
-    if (m && m.reward != null) {
-      lb.add(' · '); lb.add('rwd ' + fmtNum(m.reward), A.dim);
-      const sp = sparkline(m.histReward); if (sp) { lb.add(' '); lb.addRaw(A.green + sp + A.r, sp.length); }
-    }
-    if (m && m.grad_norm != null) { lb.add(' · '); lb.add('grad ' + fmtNum(m.grad_norm), A.dim); }
-    if (!m && hud.lastAction) { lb.add(' · '); lb.add(hud.lastAction, A.dim); }
-    if (hud.actions) { lb.add(' · '); lb.add(hud.actions + ' actions', A.dim); }
-    lb.add(' · '); lb.add(el + 's', A.dim);
-    if (hud.tokens) { lb.add(' · '); lb.add('↑' + fmtTok(hud.tokens) + ' tok', A.dim); }
-    out.push(lb.str());
     return out;
   }
-  const fmtNum = (v) => { const n = Number(v); return Number.isFinite(n) ? (Math.abs(n) < 1 ? n.toFixed(3) : n.toFixed(2)) : String(v); };
 
   function hudResetTurn() {
     hud.start = Date.now(); hud.i = 0; hud.tokens = 0; hud.actions = 0;
-    hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = '';
+    hud.pipeline = null; hud.metric = null; hud.activeRole = null; hud.lastAction = ''; hud.stageStart = 0;
   }
 
   // ---- the persistent footer: optional HUD lines (when busy) + an always-present input box.
@@ -400,9 +333,9 @@ function interactive(brain) {
     let head = [];
     if (busy) {
       head = PLAIN
-        ? ['', A.dim + GLYPHS[hud.i % GLYPHS.length] + ' working… (' +
+        ? ['', A.dim + ui.GLYPHS[hud.i % ui.GLYPHS.length] + ' working… (' +
            Math.round((Date.now() - hud.start) / 1000) + 's' +
-           (hud.tokens ? ' · ↑' + fmtTok(hud.tokens) : '') + ')' + A.r]
+           (hud.tokens ? ' · ↑' + ui.fmtTok(hud.tokens) : '') + ')' + A.r]
         : hudLines();
     }
     head.push(boxTop(width, currentBrain || ''));

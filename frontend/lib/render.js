@@ -16,7 +16,8 @@ const ROLE_COLOR = {
   Quantizer: 'brightYellow',
   ServingOptimizer: 'yellow',
   Evaluator: 'brightWhite',
-  Publisher: 'red',
+  Publisher: 'brightRed',
+  Merger: 'cyan',
 };
 
 function roleColor(role) {
@@ -54,6 +55,19 @@ function argsSummary(args) {
   return s === '{}' ? '' : clip(s, 160);
 }
 
+// Pick the most MEANINGFUL number from a gate's metrics for the one-line badge: a score-like
+// metric first (what a human reads), then any number. Returns [key, value] or null.
+const _METRIC_PREF = ['score', 'accuracy', 'pass_rate', 'capability', 'refusal_rate_harmful',
+  'speedup', 'output_speedup', 'reward', 'final_loss', 'loss'];
+function headlineMetric(m) {
+  if (!m || typeof m !== 'object') return null;
+  for (const k of _METRIC_PREF) if (typeof m[k] === 'number') return [k, m[k]];
+  for (const k of Object.keys(m)) if (typeof m[k] === 'number') return [k, m[k]];
+  return null;
+}
+// an optional pre-formatted duration string (the surface times the step + formats via ui.fmtDur)
+const dur = (obj) => (obj && obj.dur ? '  ' + obj.dur : '');
+
 // Returns [{ text, color }, ...] for the transcript (empty array to skip).
 function formatEvent(obj) {
   const role = obj.role || '';
@@ -78,7 +92,7 @@ function formatEvent(obj) {
       const mark = ok ? '✓' : '✗';
       const name = obj.tool ? obj.tool : '';
       const a = argsSummary(obj.args);
-      const head = ('  ' + mark + ' ' + tag + name + (a ? ' ' + a : '')).trimEnd();
+      const head = ('  ' + mark + ' ' + tag + name + (a ? ' ' + a : '') + dur(obj)).trimEnd();
       out.push({ text: head, color: ok ? 'cyan' : 'red' });
       const body = clip(obj.output, 600);
       if (body) out.push({ text: '    ' + body, color: 'gray' });
@@ -89,8 +103,8 @@ function formatEvent(obj) {
       return [{ text: '◆ plan ' + stages.join(' → '), color: 'brightCyan' }];
     }
     case 'stage': {
-      if (obj.state === 'done') return [{ text: '✓ ' + obj.name + ' complete', color: 'green' }];
-      if (obj.state === 'failed') return [{ text: '✗ ' + obj.name + ' failed', color: 'red' }];
+      if (obj.state === 'done') return [{ text: '✓ ' + obj.name + ' complete' + dur(obj), color: 'green' }];
+      if (obj.state === 'failed') return [{ text: '✗ ' + obj.name + ' failed' + dur(obj), color: 'red' }];
       if (obj.state === 'retry') return [{ text: '↻ ' + obj.name + ' retry (attempt ' + (obj.attempt || '?') + ')', color: 'yellow' }];
       return [];   // 'active' is shown live in the HUD, not the transcript
     }
@@ -103,11 +117,10 @@ function formatEvent(obj) {
     case 'artifact': {
       const par = Array.isArray(obj.parents) && obj.parents.length
         ? ' ← ' + obj.parents.map((p) => String(p).slice(-6)).join(', ') : '';
-      const m = obj.metrics && typeof obj.metrics === 'object' ? obj.metrics : {};
-      const k = Object.keys(m).find((x) => typeof m[x] === 'number');
-      const met = k ? '  ' + k + ' ' + (Math.round(m[k] * 1000) / 1000) : '';
+      const hm = headlineMetric(obj.metrics);
+      const met = hm ? '  ' + hm[0] + ' ' + (Math.round(hm[1] * 1000) / 1000) : '';
       const tag = obj.passed === false ? ' ✗' : (obj.passed === true ? ' ✓' : '');
-      return [{ text: '◇ ' + obj.kind + '#' + String(obj.id || '').slice(-6) + par + met + tag, color: roleColor(role) }];
+      return [{ text: '◇ ' + obj.kind + '#' + String(obj.id || '').slice(-6) + par + met + tag + dur(obj), color: roleColor(role) }];
     }
     case 'metric':
     case 'budget':
@@ -151,4 +164,4 @@ function formatEvent(obj) {
   }
 }
 
-module.exports = { formatEvent, roleColor, argsSummary, ROLE_COLOR };
+module.exports = { formatEvent, roleColor, argsSummary, headlineMetric, ROLE_COLOR };

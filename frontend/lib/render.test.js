@@ -54,4 +54,20 @@ assert.deepStrictEqual(only({ type: 'budget', max_steps: 80 }), []);
   assert.ok(out.some((l) => l.includes('gpt-5 (current)')));
 }
 
+// artifact: the headline metric prefers a meaningful key (capability) over an arbitrary one
+assert.deepStrictEqual(
+  only({ type: 'artifact', role: 'Quantizer', kind: 'model', id: 'model-1-zzz999',
+    parents: [], metrics: { exit_code: 0, capability: 0.91 } }),
+  ['◇ model#zzz999  capability 0.91']
+);
+
+// duration: a pre-formatted obj.dur is appended to tool / stage / artifact lines (info clarity)
+assert.deepStrictEqual(only({ type: 'stage', name: 'Quantizer', state: 'done', dur: '12.3s' }),
+  ['✓ Quantizer complete  12.3s']);
+{
+  const head = only({ type: 'tool', tool: 'launch_job', ok: true, args: {}, dur: '2.0s' })[0];
+  assert.ok(head.includes('launch_job') && head.endsWith('2.0s'));
+}
+assert.ok(only({ type: 'artifact', kind: 'model', id: 'm-1-aaa111', parents: [], dur: '40s' })[0].endsWith('40s'));
+
 console.log('render.test.js: all assertions passed');

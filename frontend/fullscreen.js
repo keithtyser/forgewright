@@ -6,30 +6,10 @@
 'use strict';
 const { spawn } = require('child_process');
 const readline = require('readline');
-const { formatEvent } = require('./lib/render');
+const { formatEvent, roleColor } = require('./lib/render');
 const creds = require('./lib/creds');
-
-// color-name (from lib/render) -> terminal-kit markup prefix
-const MARKUP = {
-  gray: '^K', white: '^w', brightWhite: '^W', cyan: '^c', brightCyan: '^C',
-  green: '^g', brightGreen: '^G', red: '^r', brightRed: '^R', yellow: '^y',
-  brightYellow: '^Y', blue: '^b', brightBlue: '^B', magenta: '^m', brightMagenta: '^M',
-};
-const escMarkup = (s) => String(s == null ? '' : s).replace(/\^/g, '^^');   // safe for model text
-const mk = (seg) => (MARKUP[seg.color] || '^w') + escMarkup(seg.text) + '^:';
-
-const GLYPHS = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-const SPARK = '▁▂▃▄▅▆▇█';
-const ROLE_MK = {
-  Director: '^C', DataCurator: '^B', SFTTrainer: '^G', RLTrainer: '^g', Abliterator: '^M',
-  Quantizer: '^Y', ServingOptimizer: '^y', Evaluator: '^W', Publisher: '^R', Merger: '^c',
-};
-const fmtTok = (n) => (n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n));
-const sparkline = (a) => {
-  if (!a || a.length < 2) return '';
-  const lo = Math.min.apply(null, a), hi = Math.max.apply(null, a), rng = (hi - lo) || 1;
-  return a.map((v) => SPARK[Math.min(7, Math.floor((v - lo) / rng * 7.999))]).join('');
-};
+const { makeTheme, escMarkup, mkVlen } = require('./lib/theme');
+const ui = require('./lib/ui');
 
 function run(brainArg) {
   let cfg = creds.resolveBrainConfig(brainArg);   // may be null on first run -> in-app wizard
@@ -37,10 +17,15 @@ function run(brainArg) {
   const termkit = require('terminal-kit');
   const term = termkit.terminal;
 
+  // one color system (FORGEWRIGHT_THEME / NO_COLOR) shared with the classic UI + render layer
+  const theme = makeTheme();
+  const mk = (seg) => theme.paintMk(seg.color, escMarkup(seg.text));        // event segment -> markup
+  const roleMk = (role) => theme.mk(roleColor(role));                       // role -> markup prefix
+
   let child = null, rl = null, document = null, transcript = null, hud = null, input = null;
   let busy = false, awaitingApproval = false, lastCtrlC = 0, timer = null;
   const state = { start: 0, i: 0, tokens: 0, actions: 0, pipeline: null, metric: null,
-                  activeRole: null, lastAction: '' };
+                  activeRole: null, lastAction: '', stageStart: 0 };
 
   function teardown(code) {
     if (timer) { clearInterval(timer); timer = null; }
@@ -59,18 +44,19 @@ function run(brainArg) {
 
     new termkit.Text({
       parent: document, x: 0, y: 0, contentHasMarkup: true,
-      content: '^C^+ forgewright ^:^K· ' + escMarkup(cfg ? cfg.brain : 'configure your brain') + '^:',
+      content: theme.paintMk('brightCyan', ' forgewright ', true) + theme.paintMk('gray', '· ' + escMarkup(cfg ? cfg.brain : 'configure your brain')),
     });
+    // layout reserves TWO rows for the HUD (pipeline row + status row) so neither is clipped
     transcript = new termkit.TextBox({
-      parent: document, x: 0, y: 1, width: W, height: H - 4,
+      parent: document, x: 0, y: 1, width: W, height: Math.max(1, H - 5),
       scrollable: true, vScrollBar: true, wordWrap: true, contentHasMarkup: true, content: '',
     });
     hud = new termkit.TextBox({
-      parent: document, x: 0, y: H - 3, width: W, height: 1, contentHasMarkup: true, content: '',
+      parent: document, x: 0, y: H - 4, width: W, height: 2, contentHasMarkup: true, content: '',
     });
     new termkit.Text({
       parent: document, x: 0, y: H - 2, contentHasMarkup: true,
-      content: '^K' + '─'.repeat(Math.max(0, W)) + '^:',
+      content: theme.mk('gray') + '─'.repeat(Math.max(0, W)) + theme.mkReset,
     });
     input = new termkit.InlineInput({
       parent: document, x: 0, y: H - 1, width: W,
@@ -90,14 +76,8 @@ function run(brainArg) {
   }
   function note(markupText) { appendLine(markupText); }
 
-  // visible length of a markup string (^X codes are 0-width; ^^ is a literal caret)
-  function vlen(s) {
-    s = String(s); let n = 0;
-    for (let i = 0; i < s.length; i++) {
-      if (s[i] === '^') { i += 1; if (s[i] === '^') n += 1; } else { n += 1; }
-    }
-    return n;
-  }
+  // visible length of a markup string (shared with the theme layer)
+  const vlen = mkVlen;
   // a clean rounded box appended into the scrolling transcript (terminal-kit-style framing)
   function panel(title, lines, accent) {
     accent = accent || '^C';
@@ -125,7 +105,7 @@ function run(brainArg) {
     const roots = nodes.filter((n) => !(n.parents || []).some((p) => byId[p]));
     const seen = new Set(); const out = [];
     const fmt = (n, prefix, conn) => {
-      const col = ROLE_MK[n.produced_by] || '^w';
+      const col = roleMk(n.produced_by);
       const tag = n.passed === false ? ' ^r✗^:' : (n.passed === true ? ' ^g✓^:' : '');
       const score = (n.score != null) ? '  ^K' + (Math.round(n.score * 1000) / 1000) + '^:' : '';
       const by = n.produced_by ? ' ^K· ' + n.produced_by + '^:' : '';
@@ -155,32 +135,14 @@ function run(brainArg) {
     panel('models' + (obj.source ? '  (' + obj.source + ')' : ''), out.length ? out : ['^K(none)^:']);
   }
 
-  // --- HUD --------------------------------------------------------------------------
+  // --- HUD (painted from the shared structured model in lib/ui) ----------------------
   function hudContent() {
-    const spin = GLYPHS[state.i % GLYPHS.length];
-    const el = Math.round((Date.now() - state.start) / 1000);
-    const parts = [];
-    if (state.pipeline && state.pipeline.length) {
-      parts.push(state.pipeline.map((s) => {
-        const g = s.state === 'done' ? '^g✓' : s.state === 'failed' ? '^r✗'
-          : s.state === 'active' ? '^M' + spin : '^K◌';
-        return g + ' ' + (ROLE_MK[s.name] || '^w') + s.name + '^:';
-      }).join('^K · ^:'));
-    }
-    const who = (state.activeRole && state.activeRole !== 'agent') ? state.activeRole : 'working';
-    let line = '^M' + spin + '^: ' + (ROLE_MK[state.activeRole] || '^w') + who + '^:';
-    const m = state.metric;
-    if (m && m.step != null) line += '^K · ^:step ' + m.step + (m.total ? '/' + m.total : '');
-    if (m && m.loss != null) line += '^K · ^:loss ' + m.loss + ' ^c' + sparkline(m.histLoss) + '^:';
-    if (m && m.reward != null) line += '^K · ^:rwd ' + m.reward + ' ^g' + sparkline(m.histReward) + '^:';
-    if (!m && state.lastAction) line += '^K · ' + escMarkup(state.lastAction) + '^:';
-    if (state.actions) line += '^K · ' + state.actions + ' actions^:';
-    line += '^K · ' + el + 's^:';
-    if (state.tokens) line += '^K · ↑' + fmtTok(state.tokens) + ' tok^:';
-    return parts.length ? (parts.join('') + '\n' + line) : line;
+    const spin = ui.GLYPHS[state.i % ui.GLYPHS.length];
+    const W = Math.max(20, term.width || 80);
+    return ui.hudRows(state, spin).map((r) => ui.paintRowMk(r.segs, theme, escMarkup, W)).join('\n');
   }
   function drawHud() { try { hud.setContent(busy ? hudContent() : '', true); } catch (e) {} }
-  function startTimer() { if (!timer) timer = setInterval(() => { state.i++; if (busy) drawHud(); }, 140); }
+  function startTimer() { if (!timer) timer = setInterval(() => { state.i++; if (busy) drawHud(); }, 120); }
   function resetTurn() {
     state.start = Date.now(); state.i = 0; state.tokens = 0; state.actions = 0;
     state.pipeline = null; state.metric = null; state.activeRole = null; state.lastAction = '';
@@ -212,6 +174,10 @@ function run(brainArg) {
     if (obj.type === 'graph') renderGraphBox(obj.nodes);
     else if (obj.type === 'models') renderModelsBox(obj);
     else for (const seg of formatEvent(obj)) appendLine(mk(seg));
+    // a persistent end-of-turn summary (elapsed / actions / tokens) in the transcript
+    if (obj.type === 'done' && obj.ok !== false && (state.actions || state.tokens)) {
+      appendLine(ui.paintRowMk(ui.runSummary(state), theme, escMarkup, term.width || 80));
+    }
     if (obj.type === 'bye') return teardown(0);
     if (busy) startTimer();
     drawHud();
@@ -233,7 +199,10 @@ function run(brainArg) {
         state.activeRole = 'Director'; break;
       case 'stage':
         if (state.pipeline && state.pipeline[obj.index]) state.pipeline[obj.index].state = obj.state;
-        if (obj.state === 'active') { state.activeRole = obj.name; state.metric = null; }
+        if (obj.state === 'active') { state.activeRole = obj.name; state.metric = null; state.stageStart = Date.now(); }
+        else if (state.stageStart && (obj.state === 'done' || obj.state === 'failed')) {
+          obj.dur = ui.fmtDur(Date.now() - state.stageStart);   // shown by formatEvent
+        }
         break;
       case 'metric': {
         const keep = (a, v) => { a.push(+v); if (a.length > 28) a.shift(); return a; };
