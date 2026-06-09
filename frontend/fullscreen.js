@@ -32,14 +32,7 @@ const sparkline = (a) => {
 };
 
 function run(brainArg) {
-  const cfg = creds.resolveBrainConfig(brainArg);
-  if (!cfg) {
-    process.stderr.write(
-      'No brain configured yet. Run the classic UI once to set up:\n' +
-      '  FORGEWRIGHT_CLASSIC=1 forgewright   (pick OpenRouter / Codex), then retry full-screen.\n');
-    process.exit(1);
-    return;
-  }
+  let cfg = creds.resolveBrainConfig(brainArg);   // may be null on first run -> in-app wizard
 
   const termkit = require('terminal-kit');
   const term = termkit.terminal;
@@ -66,7 +59,7 @@ function run(brainArg) {
 
     new termkit.Text({
       parent: document, x: 0, y: 0, contentHasMarkup: true,
-      content: '^C^+ forgewright ^:^K· ' + escMarkup(cfg.brain) + '^:',
+      content: '^C^+ forgewright ^:^K· ' + escMarkup(cfg ? cfg.brain : 'configure your brain') + '^:',
     });
     transcript = new termkit.TextBox({
       parent: document, x: 0, y: 1, width: W, height: H - 4,
@@ -90,10 +83,77 @@ function run(brainArg) {
     document.giveFocusTo(input);
   }
 
-  function appendLine(line) {
+  const buffer = [];
+  function appendLine(line, replay) {
+    if (!replay) { buffer.push(line); if (buffer.length > 2000) buffer.shift(); }
     try { transcript.appendLog(line); } catch (e) { /* element may be torn down */ }
   }
   function note(markupText) { appendLine(markupText); }
+
+  // visible length of a markup string (^X codes are 0-width; ^^ is a literal caret)
+  function vlen(s) {
+    s = String(s); let n = 0;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '^') { i += 1; if (s[i] === '^') n += 1; } else { n += 1; }
+    }
+    return n;
+  }
+  // a clean rounded box appended into the scrolling transcript (terminal-kit-style framing)
+  function panel(title, lines, accent) {
+    accent = accent || '^C';
+    const maxw = Math.max(28, (term.width || 80) - 2);
+    const inner = Math.min(maxw - 2, Math.max(vlen(title) + 4, Math.max.apply(null, [0].concat(lines.map(vlen))), 28));
+    appendLine(accent + '╭─ ^+' + title + '^: ' + accent + '─'.repeat(Math.max(1, inner - vlen(title) - 2)) + '╮^:');
+    for (const ln of lines) appendLine(accent + '│ ^:' + ln + ' '.repeat(Math.max(0, inner - vlen(ln))) + accent + ' │^:');
+    appendLine(accent + '╰' + '─'.repeat(inner + 2) + '╯^:');
+  }
+
+  // rebuild the document on resize, preserving the recent transcript
+  function relayout() {
+    try { if (document) document.destroy(); } catch (e) {}
+    buildUI();
+    for (const l of buffer.slice(-500)) appendLine(l, true);
+    drawHud();
+  }
+
+  // --- /graph + /models as framed panels in the transcript --------------------------
+  const sid = (id) => String(id || '').slice(-6);
+  function renderGraphBox(nodes) {
+    if (!nodes || !nodes.length) { panel('provenance graph', ['^Kno artifacts in the registry yet^:']); return; }
+    const byId = {}; nodes.forEach((n) => { byId[n.id] = n; });
+    const kids = {}; nodes.forEach((n) => (n.parents || []).forEach((p) => { (kids[p] = kids[p] || []).push(n.id); }));
+    const roots = nodes.filter((n) => !(n.parents || []).some((p) => byId[p]));
+    const seen = new Set(); const out = [];
+    const fmt = (n, prefix, conn) => {
+      const col = ROLE_MK[n.produced_by] || '^w';
+      const tag = n.passed === false ? ' ^r✗^:' : (n.passed === true ? ' ^g✓^:' : '');
+      const score = (n.score != null) ? '  ^K' + (Math.round(n.score * 1000) / 1000) + '^:' : '';
+      const by = n.produced_by ? ' ^K· ' + n.produced_by + '^:' : '';
+      return '^K' + prefix + conn + '^:' + col + escMarkup(n.kind) + '^:^K#' + sid(n.id) + '^:' + by + score + tag;
+    };
+    const walk = (id, prefix, isLast, depth) => {
+      if (seen.has(id)) return; seen.add(id); const n = byId[id]; if (!n) return;
+      out.push(fmt(n, prefix, depth === 0 ? '' : (isLast ? '└─ ' : '├─ ')));
+      const ks = (kids[id] || []).filter((k) => byId[k]);
+      const cp = prefix + (depth === 0 ? '' : (isLast ? '   ' : '│  '));
+      ks.forEach((k, i) => walk(k, cp, i === ks.length - 1, depth + 1));
+    };
+    roots.forEach((r, i) => walk(r.id, '', i === roots.length - 1, 0));
+    nodes.forEach((n) => { if (!seen.has(n.id)) out.push(fmt(n, '', '')); });
+    panel('provenance graph  (' + nodes.length + ' artifacts)', out);
+  }
+  function renderModelsBox(obj) {
+    const cur = obj.current || (cfg && cfg.brain) || '';
+    let list = Array.isArray(obj.available) ? obj.available : [];
+    const out = [];
+    if (obj.note) out.push('^K' + escMarkup(obj.note) + '^:');
+    if (!list.length && obj.source === 'error') { out.push('^Kcurated fallback:^:'); list = creds.CODEX_MODELS; }
+    list.forEach((mid) => {
+      const isCur = cur && (cur === mid || cur.endsWith(':' + mid));
+      out.push(isCur ? '^g● ' + escMarkup(mid) + ' (current)^:' : '^K· ^:' + escMarkup(mid));
+    });
+    panel('models' + (obj.source ? '  (' + obj.source + ')' : ''), out.length ? out : ['^K(none)^:']);
+  }
 
   // --- HUD --------------------------------------------------------------------------
   function hudContent() {
@@ -149,7 +209,9 @@ function run(brainArg) {
     if (obj.type === 'approval_request') { showApproval(obj); return; }
     if (obj.type === 'done') busy = false;
     updateHudState(obj);
-    for (const seg of formatEvent(obj)) appendLine(mk(seg));
+    if (obj.type === 'graph') renderGraphBox(obj.nodes);
+    else if (obj.type === 'models') renderModelsBox(obj);
+    else for (const seg of formatEvent(obj)) appendLine(mk(seg));
     if (obj.type === 'bye') return teardown(0);
     if (busy) startTimer();
     drawHud();
@@ -219,8 +281,67 @@ function run(brainArg) {
       if (!wasBusy) startTimer();
       return;
     }
-    if (c === '/login') return note('^y/login from full-screen lands next; for now: FORGEWRIGHT_CLASSIC=1 forgewright^:');
+    if (c === '/login' || c === '/auth' || c === '/refresh') {
+      return runWizard((c2) => { cfg = c2; relayout(); note('^Krestarting backend…^:'); restartBackend(); });
+    }
     note('^Kunknown command ' + escMarkup(cmd) + ' — try /help^:');
+  }
+
+  // --- setup wizard (first run + /login) --------------------------------------------
+  function runWizard(done) {
+    note('^W^+Set up your brain^: ^K(↑/↓ · enter)^:');
+    const menu = new termkit.ColumnMenu({
+      parent: document, x: 2, y: Math.max(2, term.height - 7),
+      buttonFocusAttr: { bgColor: 'green', color: 'white', bold: true },
+      items: [{ content: 'OpenRouter API key', value: 'openrouter' },
+              { content: 'Codex (ChatGPT login)', value: 'codex' }],
+    });
+    document.giveFocusTo(menu);
+    menu.on('submit', (v) => {
+      try { menu.destroy(); } catch (e) {}
+      if (menuValue(v) === 'codex') wizardCodex(done); else wizardOpenRouter(done);
+    });
+  }
+  function wizardOpenRouter(done) {
+    note('^Kpaste your OpenRouter API key, then enter:^:');
+    const ask = new termkit.InlineInput({
+      parent: document, x: 0, y: term.height - 1, width: term.width,
+      prompt: { content: '^G❯ ^:', contentHasMarkup: true },
+    });
+    document.giveFocusTo(ask);
+    ask.on('submit', (key) => {
+      try { ask.destroy(); } catch (e) {}
+      key = (key || '').trim();
+      if (!key) { note('^rno key entered^:'); return runWizard(done); }
+      const c = creds.loadCreds();
+      c.brain = creds.OPENROUTER_DEFAULT_MODEL; c.openrouter_api_key = key;
+      creds.saveCreds(c);
+      done({ brain: c.brain, env: { OPENROUTER_API_KEY: key } });
+    });
+  }
+  function wizardCodex(done) {
+    note('^Kpick a Codex model (run `codex login` first if you have not):^:');
+    const items = creds.CODEX_MODELS.map((m) => ({ content: m, value: m }));
+    const menu = new termkit.ColumnMenu({
+      parent: document, x: 2, y: Math.max(2, term.height - 12),
+      buttonFocusAttr: { bgColor: 'green', color: 'white', bold: true }, items,
+    });
+    document.giveFocusTo(menu);
+    menu.on('submit', (v) => {
+      try { menu.destroy(); } catch (e) {}
+      const model = menuValue(v) || creds.CODEX_MODELS[0];
+      const c = creds.loadCreds();
+      c.brain = 'oauth-codex:' + model; c.codex_model = model; delete c.openrouter_api_key;
+      creds.saveCreds(c);
+      done({ brain: c.brain, env: {} });
+    });
+  }
+
+  function restartBackend() {
+    try { if (rl) rl.close(); } catch (e) {}
+    const old = child;
+    if (old) { old.removeAllListeners('exit'); old.once('exit', () => startBackend()); try { old.stdin.end(); } catch (e) {} try { old.kill(); } catch (e) {} }
+    else startBackend();
   }
 
   function showApproval(obj) {
@@ -240,11 +361,14 @@ function run(brainArg) {
     document.giveFocusTo(menu);
     menu.on('submit', (value) => {
       try { menu.destroy(); } catch (e) {}
-      send({ type: 'approval_response', decision: value || 'no' });
+      send({ type: 'approval_response', decision: menuValue(value) || 'no' });
       awaitingApproval = false;
       try { document.giveFocusTo(input); } catch (e) {}
     });
   }
+
+  // terminal-kit ColumnMenu may emit the item's value or the item object; accept both.
+  function menuValue(v) { return (v && typeof v === 'object') ? (v.value != null ? v.value : v.content) : v; }
 
   function onCtrlC() {
     const now = Date.now();
@@ -258,8 +382,13 @@ function run(brainArg) {
   try {
     buildUI();
     term.on('key', (name) => { if (name === 'CTRL_C') onCtrlC(); });
-    note('^Kstarting backend…  (type anytime · /help · Ctrl-C interrupts, twice quits)^:');
-    startBackend();
+    term.on('resize', () => { try { relayout(); } catch (e) {} });
+    if (cfg) {
+      note('^Kstarting backend…  (type anytime · /help · Ctrl-C interrupts, twice quits)^:');
+      startBackend();
+    } else {
+      runWizard((c) => { cfg = c; relayout(); note('^Kstarting backend…^:'); startBackend(); });
+    }
   } catch (e) {
     teardown(1);
     throw e;   // dispatcher catches and falls back to classic
