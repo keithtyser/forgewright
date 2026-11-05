@@ -141,10 +141,25 @@ class Director:
                 if any(a is None for a in artifacts):
                     return DirectorResult(False, [], failed_at="recovery", reason="Missing registered artifact")
                 found = [a for a in artifacts if a is not None]
-                if any(a.kind == "served_endpoint" for a in found):
+                if any(a.kind in ("served_endpoint", "published") for a in found):
                     return DirectorResult(False, found, failed_at="recovery",
-                        reason="Saved endpoint receipts require a fresh health and quality check")
+                        reason="Saved endpoint or publication receipts require a fresh remote check")
+                try:
+                    journal.verify_files()
+                    for proof in journal.state["file_proofs"]:
+                        saved_artifact = self.registry.get(proof["artifact"])
+                        if saved_artifact is None:
+                            raise ValueError("Saved recipe is missing a registered input or output")
+                        self.registry.select(saved_artifact.kind, artifact_id=saved_artifact.id)
+                except ValueError as error:
+                    return DirectorResult(False, found, failed_at="recovery", reason=str(error))
                 return DirectorResult(True, found, final=found[-1] if found else None)
+        seed_proofs = []
+        output_proofs = {}
+        if journal:
+            from forgewright.tools.forge import ForgeRunner
+            repo = recipe[0].init_kwargs.get("runner", ForgeRunner()).repo if recipe else ForgeRunner().repo
+            seed_proofs = [proof for a in current if (proof := journal.file_proof(a, repo)) is not None]
         produced: list[Artifact] = []
         completed: list[tuple[Step, Artifact, int]] = []   # (step, art, idx) of stages that PASSED
         inputs_at: dict[int, list[Artifact]] = {}          # idx -> the `current` list when it ran
@@ -172,8 +187,11 @@ class Director:
                              artifacts=[a.id for a in produced])
             art, passed = self._run_attempt(step, current, goal, i, total, attempt)
             if journal:
+                proof = journal.file_proof(art, step.init_kwargs.get("runner", ForgeRunner()).repo) if passed else None
+                if proof is not None:
+                    output_proofs[art.id] = proof
                 journal.state["receipts"].append({"index": i, "artifact": art.id if art else None,
-                                                  "passed": passed, "attempt": attempt})
+                                                  "passed": passed, "attempt": attempt, "file_proof": proof})
                 journal.save()
             if art is not None:
                 produced.append(art)
@@ -210,7 +228,9 @@ class Director:
 
         final = produced[-1] if produced else None
         if journal:
-            journal.save(status="complete", artifacts=[a.id for a in produced])
+            journal.save(status="complete", artifacts=[a.id for a in produced], settings=journal.settings,
+                         file_proofs=seed_proofs + [output_proofs[a.id] for _, a, _ in completed
+                                                   if a.id in output_proofs])
         self._emit("assistant", content=f"recipe complete: {len(produced)} artifacts, "
                    f"lineage {[a.id for a in produced]}")
         return DirectorResult(True, produced, final=final)

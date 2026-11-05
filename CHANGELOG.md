@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Hash local candidate files around model evaluation; require the same files for publication and pin its upload path.
+- Check saved recipe settings and file contents before reusing a completed result; block old or unverifiable receipts.
 - Stop retrying permanent provider errors; bound retries, honor Retry-After, and cancel retry waits and later tool calls.
 - Require explicit or scoped recipe inputs; exclude models whose latest evaluation failed.
 - Lock registry reads, reject conflicting records, and require complete, acyclic publication lineage.

@@ -64,6 +64,12 @@ class Publisher(Specialist):
         family, variant = target.meta.get("family"), target.meta.get("variant")
         if not family or not variant:
             return self._blocked(target, "model family and variant are required")
+        from forgewright.registry.integrity import verify_manifest, IntegrityError
+        checkpoint = evidence.meta.get("checkpoint")
+        try:
+            verified = verify_manifest(target.uri, checkpoint, repo=self.forge.repo, checkpoint=True)
+        except IntegrityError as error:
+            return self._blocked(target, str(error))
 
         args = publish_args or (
             f"publish-model {shlex.quote(family)} {shlex.quote(variant)} "
@@ -72,6 +78,11 @@ class Publisher(Specialist):
         tokens = shlex.split(args)
         if tokens[:3] != ["publish-model", family, variant]:
             return self._blocked(target, "publish command does not name the evaluated model")
+        # model-forge accepts abbreviated flags. Reject every spelling of an
+        # artifact-path override, then pin the upload to the verified directory.
+        if any(t.startswith("--") and "--artifact-path".startswith(t.split("=", 1)[0]) for t in tokens[3:]):
+            return self._blocked(target, "Publisher sets artifact-path from the evaluated checkpoint")
+        tokens.extend(["--artifact-path", verified["root"]])
         if "--json" not in tokens:
             tokens.append("--json")
         args = shlex.join(tokens)
@@ -80,25 +91,36 @@ class Publisher(Specialist):
         decision = self.permissions.check(self.publish_tool, {"args": args})
         if not decision.allowed:
             return self._blocked(target, f"publish not approved ({decision.reason})")
+        try:
+            verify_manifest(target.uri, checkpoint, repo=self.forge.repo, checkpoint=True)
+        except IntegrityError as error:
+            return self._blocked(target, str(error))
 
         self._emit("assistant", content=f"publishing {target.id}: {args}")
         res = self.publish_tool.run(args=args)
+        integrity_error = ""
+        try:
+            verify_manifest(target.uri, checkpoint, repo=self.forge.repo, checkpoint=True)
+        except IntegrityError as error:
+            integrity_error = str(error)
         try:
             receipt = json.loads(res.output)
         except (ValueError, TypeError):
             receipt = {}
         if not isinstance(receipt, dict):
             receipt = {}
-        ok = bool(res.ok and execute and receipt.get("dry_run") is False
+        ok = bool(not integrity_error and res.ok and execute and receipt.get("dry_run") is False
                   and receipt.get("family") == family and receipt.get("variant") == variant
                   and receipt.get("uploaded_at") and receipt.get("uploaded_files")
                   and str(receipt.get("hub_url", "")).startswith("https://huggingface.co/"))
         art = PublishedArtifact(
             uri=receipt.get("hub_url", "") if ok else "", produced_by=self.role, parents=[target.id],
             run_id=(self.ledger.run_id if self.ledger else ""),
-            gate=Gate(passed=ok, verdict="PUBLISHED" if ok else "UNVERIFIED: no completed upload receipt"),
+            gate=Gate(passed=ok, verdict="PUBLISHED" if ok else
+                      f"UNVERIFIED: {integrity_error or 'no completed upload receipt'}"),
             meta={"release_class": release_class, "args": args, "evaluation_id": evidence.id,
-                  "receipt": receipt, "executed": execute},
+                  "receipt": receipt, "executed": execute, "checkpoint_sha256": verified["sha256"],
+                  "integrity_error": integrity_error},
         )
         self.registry.register(art)
         self._emit("tool", tool="forge_publish", ok=ok, output=res.output[:200])

@@ -115,6 +115,11 @@ class Evaluator(Specialist):
 
     def _eval_model_internal(self, model: Artifact, *, baseline: Optional[dict] = None) -> Artifact:
         """Compare the candidate with its immediate source checkpoint."""
+        from forgewright.registry.integrity import capture_manifest, IntegrityError
+        try:
+            checkpoint = capture_manifest(model.uri, repo=self.forge.repo, checkpoint=True)
+        except IntegrityError as error:
+            return self._model_eval_artifact(model, {}, baseline, served=False, integrity_error=str(error))
         if baseline is None:
             parent = next((p for aid in model.parents
                            if (p := self.registry.get(aid)) is not None and p.kind == "model"), None)
@@ -128,7 +133,7 @@ class Evaluator(Specialist):
             if model.meta.get("role") != "abliterated":
                 baseline = {"capability": baseline.get("capability")}
         metrics = self._measure_model(model)
-        return self._model_eval_artifact(model, metrics, baseline, served=bool(metrics))
+        return self._model_eval_artifact(model, metrics, baseline, served=bool(metrics), checkpoint=checkpoint)
 
     def _measure_model(self, model: Artifact) -> dict:
         from forgewright.skills.model_identity import register_model
@@ -159,14 +164,24 @@ class Evaluator(Specialist):
         return read_abliterate_metrics(scores) if scores else {}
 
     def _model_eval_artifact(self, model: Artifact, metrics: dict, baseline: Optional[dict],
-                             *, served: bool) -> Artifact:
+                             *, served: bool, checkpoint: Optional[dict] = None,
+                             integrity_error: str = "") -> Artifact:
         gate = _model_gate(metrics, baseline, tolerance=self.tolerance, served=served)
+        if checkpoint is not None:
+            from forgewright.registry.integrity import verify_manifest, IntegrityError
+            try:
+                verify_manifest(model.uri, checkpoint, repo=self.forge.repo, checkpoint=True)
+            except IntegrityError as error:
+                integrity_error = str(error)
+        if integrity_error:
+            gate = Gate(False, metrics=gate.metrics, verdict=f"FAIL: {integrity_error}")
         art = EvalArtifact(
             uri="", produced_by=self.role, parents=[model.id],
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=gate, meta={"family": model.meta.get("family"), "variant": model.meta.get("variant"),
                              "baseline": baseline, "target_uri": model.uri,
-                             "scope": "model_internal", **metrics},
+                             "scope": "model_internal", **metrics,
+                             "checkpoint": checkpoint, "integrity_error": integrity_error},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=gate.passed,

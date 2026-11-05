@@ -22,7 +22,7 @@ the unsupported path now stops before launch.
 | 08 | Remote target only controls some stages | Blocked: reject remote recipes and mixed targets before launch. A shared host/filesystem abstraction remains open. |
 | 09 | Resource limits and GPU selection | Partial: reject unsupported dollar/GPU-hour caps, honor step limits, check wall time between calls, and expose training container settings. Hard limits and device isolation remain open. |
 | 10 | Cleanup deletes shared serving container | Partial: unique names, ownership labels, immutable Docker IDs, and occupied-port checks. Prove every supported launcher's cleanup and failure behavior. |
-| 11 | Unsafe recipe replay after restart | Partial: durable stage receipts block replay of unfinished work; completed endpoint receipts require revalidation. Automatic job/output reconciliation remains open. |
+| 11 | Unsafe recipe replay after restart | Partial: durable receipts block unfinished work; completed results require matching settings and local file manifests. Old receipts and changed or missing files block reuse. Endpoints and publications require fresh remote checks. Automatic job reconciliation remains open. |
 | 12 | Custom holdout leaks into training | Fixed for normalized prompt overlap: filter during curation, verify before SFT/GRPO, and record file hashes. Semantic duplicates and final-test policy remain open. |
 | 13 | Vulnerable dependencies | Fixed for the audited control-plane lock: refreshed Python dependencies; retained compatible, pinned terminal renderer versions; audits are clear. GPU images need separate scans. |
 | 14 | Unrepeatable installs | Partial: hashed Python lock, npm lock, pinned model-forge revision and CI actions. GPU image digests and training dependency locks remain open. |
@@ -31,7 +31,7 @@ the unsupported path now stops before launch.
 | 17 | SSH and shell handling | Partial: known-host enforcement now covers setup, GPU inspection and abliteration too. Remote directories are quoted; chained setup commands stay inside the container. Real SSH failure and timeout tests remain open. |
 | 18 | Codex authentication and streaming | Partial: honor CODEX_HOME, reject incomplete streams, lock refreshes and replace credentials atomically. The direct OAuth adapter remains experimental; supported integration and cross-client coordination remain open. |
 | 19 | Secret storage | Partial: restrict credential files before writing and redact common secrets from durable events. Plaintext storage, child-process environment scope and broader secret detection remain open. |
-| 20 | Artifact identity and scope | Partial: immutable records, locked reads/writes, corruption checks, scoped unambiguous inputs and latest-evaluation filtering. Publication checks missing parents and cycles. Weight manifests and validation of file contents remain open. |
+| 20 | Artifact identity and scope | Partial: immutable records, scoped inputs, latest-evaluation filtering and complete publication lineage. Streamed SHA-256 manifests bind standalone candidate evaluation and publication to local file contents. Adapter/baseline manifests, immutable upload snapshots and remote byte checks remain open. |
 | 21 | Repair recalls rejected work as success | Fixed: quality stays pending after a transform; evaluation updates that artifact's outcome; repair uses its latest result and keeps GRPO's method metadata. |
 | 22 | Smoke defaults enter real training | Partial: SFT uses all curated rows unless bounded explicitly; distillation requires an explicit provider and rejects template simulation for training. Training schedules still need workload-specific validation. |
 | 23 | Data contracts and provenance | Partial: strict JSONL reads, safe message validation, overlap checks, counts and hashes; unknown licenses stay unknown. Source-level evidence and streaming curation remain open. |
@@ -54,7 +54,7 @@ the unsupported path now stops before launch.
 3. Add a shared remote execution and file-access layer. Test paths with spaces,
    disconnection, process exit and cleanup before restoring remote recipes.
 4. Separate repair validation from final release testing. Save per-example results,
-   score uncertainty, weight manifests and source-license evidence.
+   score uncertainty, adapter/baseline manifests and source-license evidence.
 5. Test the terminal in a PTY and replace the experimental authentication path.
    Add a non-public upload canary only with a chosen target.
 
