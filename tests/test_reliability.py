@@ -388,3 +388,14 @@ def test_director_preserves_shared_interrupt_and_job_manager(tmp_path):
     result = Director(registry=Registry(tmp_path / 'r.jsonl')).run_recipe(
         'go', [Step(Stage, init_kwargs={'jobs': manager})])
     assert result.ok
+
+
+def test_launcher_cancel_failure_still_cleans_owned_container(tmp_path, monkeypatch):
+    jobs = SimpleNamespace(status=lambda _: {'status': 'running'}, kill=lambda _: False)
+    engine = ServingOptimizer(ForgeRunner(tmp_path), jobs)
+    engine._launched, engine._job = True, 'job'
+    cleaned = []
+    monkeypatch.setattr('forgewright.skills.serving_opt.stop_owned_container', cleaned.append)
+    with pytest.raises(RuntimeError, match='termination is unconfirmed'):
+        engine.stop()
+    assert cleaned == [engine.container_name] and not engine._launched

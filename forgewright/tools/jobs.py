@@ -58,7 +58,8 @@ def _process_identity(pid: int, host: str | None = None) -> str | None:
                 stat = result.stdout
             else:
                 stat = Path(f"/proc/{pid}/stat").read_text()
-            return stat.rsplit(")", 1)[1].split()[19]
+            fields = stat.rsplit(")", 1)[1].split()
+            return None if fields[0] == "Z" else fields[19]
         import ctypes
         from ctypes import wintypes
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)

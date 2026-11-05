@@ -174,12 +174,18 @@ class ServingOptimizer:
 
     def stop(self) -> None:
         if self._launched:
-            if self._job:
-                state = self.jobs.status(self._job)
-                if state and state.get("status") == "running" and not self.jobs.kill(self._job):
-                    raise RuntimeError("Could not stop the owned server launcher")
-            stop_owned_container(self.container_name)
-            self._launched = False
+            stopped = True
+            try:
+                if self._job:
+                    state = self.jobs.status(self._job)
+                    if state and state.get("status") in ("running", "stopping"):
+                        stopped = self.jobs.kill(self._job)
+            finally:
+                # A launcher error must not skip cleanup of the owned GPU container.
+                stop_owned_container(self.container_name)
+                self._launched = False
+            if not stopped:
+                raise RuntimeError("Container removed, but server launcher termination is unconfirmed")
 
     # --- measure ---------------------------------------------------------------
 
