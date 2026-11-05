@@ -62,7 +62,7 @@ def _process_identity(pid: int, host: str | None = None) -> str | None:
             return None if fields[0] == "Z" else fields[19]
         import ctypes
         from ctypes import wintypes
-        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
         kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel.OpenProcess.restype = wintypes.HANDLE
         kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
@@ -145,7 +145,8 @@ class JobManager:
             wrapped = f"( {command} ) > {shlex.quote(str(log))} 2>&1 ; echo $? > {shlex.quote(str(code))}"
             kwargs: dict[str, Any] = {"creationflags": 0}
             if os.name == "nt":
-                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+                kwargs["creationflags"] = (getattr(subprocess, "CREATE_NEW_PROCESS_GROUP")
+                                           | getattr(subprocess, "DETACHED_PROCESS"))
             else:
                 kwargs["start_new_session"] = True
             try:
