@@ -23,7 +23,6 @@ from forgewright.agents.quantizer import Quantizer
 from forgewright.agents.rl_trainer import RLTrainer
 from forgewright.agents.serving_optimizer import ServingOptimizer
 from forgewright.agents.sft import SFTTrainer
-from forgewright.contracts import DatasetArtifact, ModelArtifact
 
 # The roster, keyed by role, kept in sync with the specialist classes' typed contracts.
 SPECIALISTS = {
@@ -105,9 +104,9 @@ def validate_chain(roles: list[str], seed_kind: Optional[str]) -> tuple[bool, st
 
 def _seed_kind(goal: str, params: dict) -> Optional[str]:
     """Infer the seed artifact kind from the params/goal (model vs dataset vs fresh goal)."""
-    if params.get("model_uri"):
+    if params.get("model_uri") or params.get("model_artifact_id"):
         return "model"
-    if params.get("dataset_uri") or params.get("dataset"):
+    if params.get("dataset_uri") or params.get("dataset") or params.get("dataset_artifact_id"):
         return "dataset"
     return None
 
@@ -186,23 +185,12 @@ def _run_kwargs(role: str, params: dict) -> dict:
 
 def _seed_inputs(first_role: str, params: dict, registry) -> list:
     """Build the seed artifact the first stage consumes (model/dataset), or none for DataCurator."""
+    from forgewright.agents.inputs import seed_artifact
     accepts = SPECIALISTS[first_role].accepts
     if not accepts:                       # DataCurator: starts from the goal
         return []
     if "model" in accepts:
-        uri = params.get("model_uri")
-        model = (ModelArtifact(uri=uri, meta={"family": params.get("family"), "role": "base",
-                                              "variant": params.get("variant", "base")})
-                 if uri else registry.latest("model"))
-        if model is None:
-            raise ValueError(f"{first_role} needs a model_uri or a model in the registry")
-        return [model]
+        return [seed_artifact("model", params, registry)]
     if "dataset" in accepts:
-        uri = params.get("dataset_uri") or params.get("dataset")
-        ds = (DatasetArtifact(uri=uri, meta={"family": params.get("family"), "source": params.get("source"),
-                                             "run_name": params.get("run_name"), "holdout": params.get("holdout")})
-              if uri else registry.latest("dataset"))
-        if ds is None:
-            raise ValueError(f"{first_role} needs a dataset_uri or a dataset in the registry")
-        return [ds]
+        return [seed_artifact("dataset", params, registry)]
     return []

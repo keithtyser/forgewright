@@ -28,10 +28,10 @@ the unsupported path now stops before launch.
 | 14 | Unrepeatable installs | Partial: hashed Python lock, npm lock, pinned model-forge revision and CI actions. GPU image digests and training dependency locks remain open. |
 | 15 | False job states and unsafe cancellation | Partial: quote remote paths, record before launch, write atomically, check process identity before cancellation, and distinguish a stop request from confirmed termination. Detached container ownership and host-loss recovery remain open. |
 | 16 | Approval relies on prompts | Partial: exact tool/argument scope, full arguments, correlated replies, and a publication check in the generic Forge tool. Shell access remains trusted execution, not a sandbox. |
-| 17 | SSH and shell handling | Partial: known-host enforcement, concurrent output reads, quoted shared path helpers and remote working directory. Audit remaining system-tool command builders and test a real SSH host. |
+| 17 | SSH and shell handling | Partial: known-host enforcement now covers setup, GPU inspection and abliteration too. Remote directories are quoted; chained setup commands stay inside the container. Real SSH failure and timeout tests remain open. |
 | 18 | Codex authentication and streaming | Partial: honor CODEX_HOME, reject incomplete streams, lock refreshes and replace credentials atomically. The direct OAuth adapter remains experimental; supported integration and cross-client coordination remain open. |
 | 19 | Secret storage | Partial: restrict credential files before writing and redact common secrets from durable events. Plaintext storage, child-process environment scope and broader secret detection remain open. |
-| 20 | Artifact identity and scope | Partial: immutable records, locked writes, corruption errors, registered seeds and failed-artifact filtering. Weight manifests, scoped discovery and complete lineage validation remain open. |
+| 20 | Artifact identity and scope | Partial: immutable records, locked reads/writes, corruption checks, scoped unambiguous inputs and latest-evaluation filtering. Publication checks missing parents and cycles. Weight manifests and validation of file contents remain open. |
 | 21 | Repair recalls rejected work as success | Fixed: quality stays pending after a transform; evaluation updates that artifact's outcome; repair uses its latest result and keeps GRPO's method metadata. |
 | 22 | Smoke defaults enter real training | Partial: SFT uses all curated rows unless bounded explicitly; distillation requires an explicit provider and rejects template simulation for training. Training schedules still need workload-specific validation. |
 | 23 | Data contracts and provenance | Partial: strict JSONL reads, safe message validation, overlap checks, counts and hashes; unknown licenses stay unknown. Source-level evidence and streaming curation remain open. |
@@ -41,7 +41,7 @@ the unsupported path now stops before launch.
 | 27 | Missing CI and handoff tests | Partial: Windows/Linux Python matrix, Node tests, builds, types, lint and audits. GPU, real SSH, PTY and upload-canary tests remain open; branch protection is unchanged. |
 | 28 | Packaging and contributor upkeep | Partial: explicit tool versions/rules, clean production lint/types, contributor and security guides, changelog and lockfiles. Release/tag work awaits integration proof. |
 | 29 | Terminal usability | Partial: full approval arguments, control-sequence stripping, cumulative tokens, retry state, NO_COLOR precedence and reduced motion. Keyboard-only, screen-reader and resize tests remain open. |
-| 30 | Context and provider limits | Partial: bound oversized recent context and validate tool arguments. Exact token accounting, retry classification, cancellation during requests and cost accounting remain open. |
+| 30 | Context and provider limits | Partial: bound oversized recent context, validate tool arguments, classify retries, disable nested retries, honor bounded Retry-After and interrupt retry waits. Local HTTP tests verify actual LiteLLM request counts. In-flight synchronous cancellation and exact token/cost accounting remain open. |
 | 31 | Claims exceed proof | Partial: README now states supported paths and limits; abliteration is optional. A dated small-model walkthrough and evidence bundle remain open. |
 
 ## Next work, in order
@@ -55,8 +55,8 @@ the unsupported path now stops before launch.
    disconnection, process exit and cleanup before restoring remote recipes.
 4. Separate repair validation from final release testing. Save per-example results,
    score uncertainty, weight manifests and source-license evidence.
-5. Test the terminal in a PTY, replace the experimental authentication path, and
-   classify provider retries. Add a non-public upload canary only with a chosen target.
+5. Test the terminal in a PTY and replace the experimental authentication path.
+   Add a non-public upload canary only with a chosen target.
 
 ## Routine upkeep
 

@@ -57,6 +57,10 @@ class Publisher(Specialist):
             return self._blocked(target, "a passing evaluation for this exact artifact is required")
         if evidence.meta.get("target_uri") not in (None, target.uri):
             return self._blocked(target, "evaluation names a different checkpoint URI")
+        try:
+            self.registry.lineage(target.id)
+        except ValueError as error:
+            return self._blocked(target, str(error))
         family, variant = target.meta.get("family"), target.meta.get("variant")
         if not family or not variant:
             return self._blocked(target, "model family and variant are required")

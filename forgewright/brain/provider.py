@@ -7,9 +7,13 @@ only on ``Brain.chat(...)`` returning an ``AssistantTurn``.
 from __future__ import annotations
 
 import json
+import math
+import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, Optional
 
 from forgewright.config import ProviderConfig
 
@@ -33,6 +37,40 @@ class BrainError(RuntimeError):
     pass
 
 
+class BrainCancelled(BrainError):
+    """The caller stopped the request or its retry wait."""
+
+
+def retry_delay(error: Exception, attempt: int, *, maximum: float = 60) -> float | None:
+    """Retry transient transport/server errors; respect a bounded Retry-After."""
+    import httpx
+
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    transient = status in {408, 409, 425, 429, 500, 502, 503, 504}
+    if status is None:
+        transient = isinstance(error, (TimeoutError, ConnectionError, httpx.TransportError)) or (
+            type(error).__name__ in {"APIConnectionError", "APITimeoutError", "Timeout"})
+    if not transient:
+        return None
+    headers = getattr(response, "headers", None) or getattr(error, "headers", {}) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    if value is not None:
+        try:
+            delay = float(value)
+        except (TypeError, ValueError):
+            try:
+                date = parsedate_to_datetime(str(value))
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                delay = (date - datetime.now(timezone.utc)).total_seconds()
+            except (TypeError, ValueError, OverflowError):
+                delay = -1
+        if math.isfinite(delay) and delay >= 0:
+            return delay if delay <= maximum else None
+    return min(maximum, 2 ** min(attempt, 6) * random.uniform(0.8, 1.2))
+
+
 class Brain:
     """Thin, retrying wrapper around ``litellm.completion`` for one provider."""
 
@@ -46,12 +84,16 @@ class Brain:
         max_tokens: int = 16384,
         max_retries: int = 3,
         timeout: int = 600,
+        interrupt: Optional[Callable[[], bool]] = None,
     ) -> None:
         self.provider = provider
         self.temperature = temperature
         self.max_tokens = max_tokens
-        self.max_retries = max_retries
+        if max_retries < 1 or timeout <= 0:
+            raise ValueError("max_retries must be at least 1 and timeout must be positive")
+        self.max_retries = max_retries  # Total attempts, including the first request.
         self.timeout = timeout
+        self.interrupt = interrupt
         # oauth-codex talks to OpenAI's Codex Responses API (ChatGPT login), not LiteLLM, so
         # it delegates to a dedicated client behind the same AssistantTurn contract.
         self._codex = None
@@ -81,7 +123,39 @@ class Brain:
             kw["tools"] = tools
             kw["tool_choice"] = tool_choice
         kw.update(self.provider.extra)
+        # One retry owner prevents SDK retries from multiplying our attempt limit.
+        kw["num_retries"] = 0
+        kw["max_retries"] = 0
         return kw
+
+    def _check_cancelled(self) -> None:
+        if self.interrupt and self.interrupt():
+            raise BrainCancelled("interrupted")
+
+    def _wait_retry(self, delay: float) -> None:
+        while delay > 0:
+            self._check_cancelled()
+            interval = min(delay, 0.1)
+            time.sleep(interval)
+            delay -= interval
+        self._check_cancelled()
+
+    def _complete(self, request: Callable[[], AssistantTurn]) -> AssistantTurn:
+        for attempt in range(self.max_retries):
+            self._check_cancelled()
+            try:
+                result = request()
+                self._check_cancelled()
+                return result
+            except BrainCancelled:
+                raise
+            except Exception as error:
+                self._check_cancelled()
+                delay = retry_delay(error, attempt)
+                if delay is None or attempt + 1 == self.max_retries:
+                    raise BrainError(f"Completion failed after {attempt + 1} attempt(s): {error}") from error
+                self._wait_retry(delay)
+        raise AssertionError("unreachable")
 
     def chat(
         self,
@@ -90,32 +164,13 @@ class Brain:
         tool_choice: str = "auto",
     ) -> AssistantTurn:
         if self._codex is not None:
-            last_err: Optional[Exception] = None
-            for attempt in range(self.max_retries):
-                try:
-                    return self._codex.chat(messages, tools, tool_choice)
-                except Exception as e:  # noqa: BLE001 - retried, then surfaced
-                    last_err = e
-                    time.sleep(min(2**attempt, 10))
-            raise BrainError(
-                f"Codex completion failed after {self.max_retries} attempts "
-                f"(model={self.provider.model!r}): {last_err}"
-            )
+            client = self._codex
+            return self._complete(lambda: client.chat(messages, tools, tool_choice))
 
         import litellm  # lazy import keeps `import forgewright` fast
 
-        last_err = None
-        for attempt in range(self.max_retries):
-            try:
-                resp = litellm.completion(**self._kwargs(messages, tools, tool_choice))
-                return self._parse(resp)
-            except Exception as e:  # noqa: BLE001 - retried, then surfaced
-                last_err = e
-                time.sleep(min(2**attempt, 10))
-        raise BrainError(
-            f"completion failed after {self.max_retries} attempts "
-            f"(model={self.provider.litellm_model()!r}): {last_err}"
-        )
+        return self._complete(lambda: self._parse(
+            litellm.completion(**self._kwargs(messages, tools, tool_choice))))
 
     @staticmethod
     def _parse(resp: Any) -> AssistantTurn:

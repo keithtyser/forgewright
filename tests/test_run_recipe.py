@@ -26,8 +26,8 @@ def test_resolve_quantize_serve_from_model_uri(tmp_path):
 def test_resolve_quantize_serve_from_registry_latest(tmp_path):
     reg = Registry(tmp_path / "a.jsonl")
     m = reg.register(ModelArtifact(uri="~/models/base", meta={"family": "q", "role": "base"}))
-    steps, seed = _resolve("quantize_serve", {}, reg)
-    assert seed[0].id == m.id   # pulled the latest model from the registry
+    steps, seed = _resolve("quantize_serve", {"family": "q"}, reg)
+    assert seed[0].id == m.id   # the only accepted model in the requested family
 
 
 def test_resolve_unknown_recipe(tmp_path):

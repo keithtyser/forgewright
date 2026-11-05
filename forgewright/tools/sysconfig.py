@@ -10,10 +10,12 @@ after a successful fix.
 from __future__ import annotations
 
 import subprocess
+import shlex
 from typing import Any, Optional
 
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
+from forgewright.tools.jobs import shell_path, ssh_args
 
 
 class EnvConfigTool(Tool):
@@ -59,17 +61,18 @@ class EnvConfigTool(Tool):
         cmd = command
         if in_container:
             # wrap with the canonical container runner; default cwd to the model-forge repo
-            cmd = f"bash scripts/run_in_container.sh {command}"
+            cmd = f"bash scripts/run_in_container.sh bash -lc {shlex.quote(command)}"
             cwd = cwd or str(self.forge.repo)
         try:
             if host:
-                remote = f"cd {cwd} && {cmd}" if cwd else cmd
+                remote = f"cd {shell_path(cwd)} && {cmd}" if cwd else cmd
                 proc = subprocess.run(
-                    ["ssh", host, remote], capture_output=True, text=True, timeout=timeout
+                    ssh_args(host) + [remote], capture_output=True, text=True, timeout=timeout
                 )
             else:
                 proc = subprocess.run(
-                    cmd, shell=True, cwd=cwd, capture_output=True, text=True, timeout=timeout
+                    ["bash", "-lc", cmd] if in_container else cmd,
+                    shell=not in_container, cwd=cwd, capture_output=True, text=True, timeout=timeout
                 )
             body = ((proc.stdout or "") + (proc.stderr or "")).strip()
             where = host or ("container" if in_container else "local")

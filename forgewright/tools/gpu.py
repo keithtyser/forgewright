@@ -69,7 +69,8 @@ class GPUInspectTool(Tool):
     def run(self, host: str | None = None, **_: Any) -> ToolResult:
         cmd = ["nvidia-smi", f"--query-gpu={_QUERY}", "--format=csv,noheader,nounits"]
         try:
-            argv = ["ssh", host, " ".join(cmd)] if host else cmd
+            from forgewright.tools.jobs import ssh_args
+            argv = ssh_args(host) + [" ".join(cmd)] if host else cmd
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         except Exception as e:  # noqa: BLE001
             return ToolResult(False, f"gpu_inspect error: {e}")

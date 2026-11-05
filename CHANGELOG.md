@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Stop retrying permanent provider errors; bound retries, honor Retry-After, and cancel retry waits and later tool calls.
+- Require explicit or scoped recipe inputs; exclude models whose latest evaluation failed.
+- Lock registry reads, reject conflicting records, and require complete, acyclic publication lineage.
+- Keep chained setup commands inside their container and quote remote directories.
 - Bind quantization to its input checkpoint and require fresh output weights.
 - Require current evaluation results, valid baselines, and evaluation after model transforms.
 - Evaluate the selected endpoint in place; restart and verify the winning serving configuration.

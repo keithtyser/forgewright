@@ -191,6 +191,8 @@ class Agent:
         self.reporter = reporter
         # cooperative interrupt: checked between steps so the user can stop a run mid-flight
         self.interrupt = interrupt
+        if isinstance(brain, Brain):
+            brain.interrupt = interrupt
         # velocity circuit breaker: the safe budget on an unbounded run - trips only on NO progress
         # per unit cost, never on healthy long work. env-tunable; pass max_idle_steps=0 to disable.
         self.breaker = breaker if breaker is not None else CircuitBreaker()
@@ -258,8 +260,14 @@ class Agent:
                 self._emit("assistant", {"step": step, "content": tripped, "tool_calls": []})
                 return LoopResult(False, step, tripped)
             step += 1
-            self.ctx.maybe_compact()
-            turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
+            from forgewright.brain.provider import BrainCancelled
+            try:
+                self.ctx.maybe_compact()
+                turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
+            except BrainCancelled:
+                return LoopResult(False, step, "interrupted")
+            if self.interrupt and self.interrupt():
+                return LoopResult(False, step, "interrupted")
             self.ctx.add_assistant(turn)
             self.breaker.record_step(int((turn.usage or {}).get("total_tokens", 0)))
             self._log(
@@ -315,6 +323,8 @@ class Agent:
             pass
 
     def _dispatch(self, tc: ToolCall, recent: list[str]) -> ToolResult:
+        if self.interrupt and self.interrupt():
+            return ToolResult(False, "interrupted")
         tool = self.tools.get(tc.name)
         if tool is None:
             return ToolResult(False, f"unknown tool: {tc.name!r}")
@@ -332,6 +342,8 @@ class Agent:
         decision = self.permissions.check(tool, tc.arguments)
         if not decision.allowed:
             return ToolResult(False, f"blocked by permission policy: {decision.reason}")
+        if self.interrupt and self.interrupt():
+            return ToolResult(False, "interrupted")
 
         try:
             return tool.run(**tc.arguments)
