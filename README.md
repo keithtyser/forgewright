@@ -52,7 +52,11 @@ Shell, job, system, and publishing tools ask for approval by default. “All” 
 
 Each transform returns an artifact with its source and gate result. Evaluation is a separate step. Missing baseline scores, failed evaluation jobs, stale files, or invalid results fail the gate. Serving optimization measures its baseline configuration, checks candidate quality, and restarts the winner. Publication supports standalone models and requires evaluation of that artifact, approval, and a completed upload receipt.
 
-Recipe inputs can use `model_uri` or `dataset_uri`, or a registered `model_artifact_id` or `dataset_artifact_id`. Without an explicit input, supply `family` or `artifact_run_id`; exactly one accepted artifact must match. A failed latest evaluation excludes its model from lookup. Publication rejects missing lineage records or cycles. These checks do not prove that model files still match their recorded contents; weight manifests remain planned work.
+Recipe inputs can use `model_uri` or `dataset_uri`, or a registered `model_artifact_id` or `dataset_artifact_id`. Without an explicit input, supply `family` or `artifact_run_id`; exactly one accepted artifact must match. A failed latest evaluation excludes its model from lookup. Publication rejects missing lineage records or cycles.
+
+Standalone model evaluation hashes the candidate's weights, config, tokenizer, and other files before and after evaluation. Publication checks that manifest again before approval, after approval, and after upload, and pins `--artifact-path` to the checked directory. Older evaluations without a manifest require a new evaluation. Use a stable local directory with at most 10,000 files; symlinks and Windows junctions are unsupported. Copy linked Hub snapshots to a regular directory first. Each check reads all files in chunks, so large checkpoints add disk I/O.
+
+These checks detect persistent file changes; they do not lock files or create an immutable upload snapshot. If files change during upload, some files may already be remote. The result keeps the upload receipt and reports `UNVERIFIED`. Inspect the remote repository before trying again. Adapter evaluation, baseline files, and remote upload contents still need separate byte-level proof.
 
 Adapter evaluation supports numeric `{prompt, answer}` JSONL tasks, with at least 32 evaluation examples. It does not measure general chat quality. Model evaluation uses model-forge's internal capability suite. A validation set used to guide repair is no longer an untouched final test; reserve a separate final test for release claims.
 
@@ -77,6 +81,8 @@ Records live under `$FORGEWRIGHT_HOME` (default `~/.forgewright`):
 - `transcripts/` holds UI events and user messages. Common secrets and known environment credentials are redacted; inspect files before sharing them.
 
 Resume with `forgewright run --resume RUN_ID "goal"`. A recipe receipt marked `active`, `failed`, or `interrupted` blocks automatic replay. Inspect the stage, jobs, outputs, and containers before choosing a fresh run. Do not delete the receipt merely to bypass the check. Automatic reconciliation of unfinished jobs remains future work.
+
+A completed recipe can reuse its result only when its saved settings and local file proofs still match. Missing, changed, unreadable, or unrecorded files block reuse without rerunning stages. Older receipts also need review. Saved endpoint and publication receipts require a fresh remote check; a past receipt cannot prove their current state.
 
 ## Terminal controls
 

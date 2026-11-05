@@ -130,8 +130,15 @@ def test_container_cleanup_checks_ownership_before_deletion(monkeypatch):
 ])
 def test_publication_requires_execute_and_upload_receipt(tmp_path, monkeypatch, receipt, execute, expected):
     receipt = {**receipt, "family": "q", "variant": "trained"}
-    reg, model, _ = setup_model(tmp_path)
-    reg.register(EvalArtifact(parents=[model.id], gate=Gate(True)))
+    from forgewright.registry.integrity import capture_manifest
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "model.safetensors").write_bytes(b"weights")
+    reg = Registry(tmp_path / "r.jsonl")
+    model = reg.register(ModelArtifact(uri=str(checkpoint), meta={"family": "q", "variant": "trained"},
+                                      gate=Gate(True)))
+    reg.register(EvalArtifact(parents=[model.id], gate=Gate(True),
+                             meta={"checkpoint": capture_manifest(model.uri, checkpoint=True)}))
     publisher = Publisher(runner=ForgeRunner(tmp_path), registry=reg,
                           permissions=PermissionPolicy(auto_approve=True))
     monkeypatch.setattr(publisher.publish_tool, "run", lambda **kwargs: ToolResult(True, json.dumps(receipt)))
@@ -222,6 +229,8 @@ def test_recipe_receipts_prevent_duplicate_work_and_require_reconciliation(tmp_p
     from forgewright.ledger.ledger import Ledger
     from forgewright.tools.base import ToolRegistry
     calls = []
+    output = tmp_path / "model.bin"
+    output.write_bytes(b"weights")
     class Stage(Specialist):
         role = "Stage"
         produces = "model"
@@ -229,7 +238,7 @@ def test_recipe_receipts_prevent_duplicate_work_and_require_reconciliation(tmp_p
         def tools(self): return ToolRegistry([])
         def run(self, inputs, goal):
             calls.append(goal)
-            return ModelArtifact(uri="out", gate=Gate(True))
+            return ModelArtifact(uri=str(output), gate=Gate(True))
     director = Director(registry=Registry(tmp_path / "r.jsonl"), ledger=Ledger("run", tmp_path))
     first = director.run_recipe("goal", [Step(Stage)])
     second = director.run_recipe("goal", [Step(Stage)])
