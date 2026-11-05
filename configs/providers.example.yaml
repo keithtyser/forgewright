@@ -32,9 +32,8 @@ hardware:
     host: keith@workstation
     workdir: ~/forgewright-runs
 
-# Hard caps enforced outside the training process (blast-radius limits).
+# Agent limits. Wall time is checked between calls; it does not stop detached GPU jobs.
+# Set dollar caps at the API provider and GPU limits in the host scheduler.
 governor:
   max_steps: 80
-  max_gpu_hours: 24
-  max_cost_usd: 50
   max_wall_clock_hours: 48

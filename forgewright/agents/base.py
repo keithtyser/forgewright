@@ -85,9 +85,17 @@ class Specialist(ABC):
     def validate_inputs(self, inputs: Sequence[Artifact]) -> None:
         """Reject inputs whose kinds this specialist does not accept (fail fast at the
         handoff boundary rather than deep inside a GPU job)."""
+        if self.host:
+            raise ValueError("Remote recipes are not supported yet; run Forgewright on the GPU host")
         if not self.accepts:
             return
+        if len(inputs) != 1:
+            raise ValueError(f"{self.role} needs exactly one input artifact")
         for art in inputs:
+            if art.meta.get("simulation") and self.role in ("SFTTrainer", "RLTrainer", "Publisher"):
+                raise ValueError("Simulation data cannot enter a training or publishing stage")
+            if art.gate is not None and not art.gate.passed:
+                raise ValueError(f"Input artifact {art.id} failed its gate")
             if art.kind not in self.accepts:
                 raise ValueError(
                     f"{self.role} accepts {self.accepts}, got artifact kind '{art.kind}' ({art.id})"

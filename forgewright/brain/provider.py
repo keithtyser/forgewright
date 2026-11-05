@@ -104,7 +104,7 @@ class Brain:
 
         import litellm  # lazy import keeps `import forgewright` fast
 
-        last_err: Optional[Exception] = None
+        last_err = None
         for attempt in range(self.max_retries):
             try:
                 resp = litellm.completion(**self._kwargs(messages, tools, tool_choice))

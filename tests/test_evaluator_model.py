@@ -24,7 +24,7 @@ def test_model_gate_no_capability():
 
 def test_model_gate_no_baseline_reports():
     g = _model_gate({"capability": 0.81}, None)
-    assert g.passed and g.verdict == "EVALUATED"
+    assert not g.passed and "baseline" in g.verdict
 
 
 def test_model_gate_abliterate_pass():

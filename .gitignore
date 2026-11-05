@@ -10,6 +10,7 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.coverage
 
 # Secrets / config
 .env

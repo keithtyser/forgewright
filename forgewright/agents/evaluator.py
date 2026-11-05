@@ -9,6 +9,10 @@ the Director keys global gating on.
 from __future__ import annotations
 
 import json
+import math
+import shlex
+import time
+import uuid
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -60,8 +64,13 @@ class Evaluator(Specialist):
                           if c is not None and c.kind == "model"), None)
             if model is None:
                 raise ValueError("Evaluator: served_endpoint has no parent model to evaluate")
-            self._emit("assistant", content=f"eval served endpoint {target.id} via its model {model.id}")
-            return self._eval_model_internal(model, baseline=baseline)
+            from forgewright.skills.serving_opt import ServingOptimizer as Engine
+            engine = Engine(self.forge, self.jobs)
+            engine.base_url = target.uri
+            engine.expected_model = target.meta.get("served_model_name")
+            metrics = self._read_internal(engine, model) if engine.wait_ready(timeout_s=15, interval=1) else {}
+            return self._model_eval_artifact(target, metrics,
+                baseline or {"capability": target.meta.get("quality")}, served=bool(metrics))
         if target.kind == "model":
             # quantized / abliterated / merged model: gate via model-forge internal eval
             return self._eval_model_internal(target, baseline=baseline)
@@ -70,24 +79,31 @@ class Evaluator(Specialist):
         holdout = holdout or target.meta.get("holdout")
         if not base or not holdout:
             raise ValueError("Evaluator needs base (adapter.meta['base']) and a holdout {prompt,answer} jsonl")
-        name = target.meta.get("run_name") or target.id
+        name = f"eval_{uuid.uuid4().hex}"
 
         self._emit("assistant", content=f"eval {target.id} (base {base}) on holdout {holdout}")
         write_eval_gate(self.forge.repo, name, base=base, adapter=adapter,
                         holdout=holdout, tolerance=self.tolerance, overwrite=True)
-        cmd = build_eval_gate_command(name)
+        from forgewright.skills.execution import container_options
+        cmd = build_eval_gate_command(name, **container_options(self.forge.repo))
         rec = self.jobs.launch(cmd, host=self.host, cwd=str(self.forge.repo), name=f"eval-{name}")
         self._emit("tool", tool="launch_job", ok=True, output=f"job {rec['id']} eval-gate {name}")
-        self.jobs.wait(rec["id"])
-
-        result = self._read_result(name)
-        passed = bool(result.get("passed"))
+        final = self.jobs.wait(rec["id"])
+        result: dict = self._read_result(name) if final and final.get("exit_code") == 0 else {
+            "passed": False, "verdict": "FAIL: evaluation job did not exit successfully"}
+        from forgewright.skills.eval_gate import gate_pass
+        passed = (result.get("passed") is True and isinstance(result.get("n"), int)
+                  and result["n"] >= 32 and gate_pass(result.get("base_score"),
+                  result.get("candidate_score"), tolerance=self.tolerance))
+        if not passed:
+            result.update(passed=False, verdict="FAIL: evaluation failed or lacks valid score evidence")
         art = EvalArtifact(
             uri=str(Path(self.forge.repo) / "runs" / "eval_gate" / name / "result.json"),
             produced_by=self.role, parents=[target.id],
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=Gate(passed=passed, metrics=result, verdict=result.get("verdict", "")),
-            meta={"base": base, "run_name": name, **result},
+            meta={"base": base, "run_name": name, "family": target.meta.get("family"),
+                  "method": target.meta.get("method"), "target_uri": target.uri, **result},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=passed,
@@ -98,41 +114,49 @@ class Evaluator(Specialist):
     # --- model (serve-based) internal-eval gate ------------------------------------
 
     def _eval_model_internal(self, model: Artifact, *, baseline: Optional[dict] = None) -> Artifact:
-        """Gate a standalone model (quantized/abliterated/merged): auto-register it, serve
-        it, run model-forge's internal eval, read capability + refusal from scores.csv, and
-        decide. Reuses the proven serve+eval machinery (ServingOptimizer engine + auto-register)."""
-        import os as _os
+        """Compare the candidate with its immediate source checkpoint."""
+        if baseline is None:
+            parent = next((p for aid in model.parents
+                           if (p := self.registry.get(aid)) is not None and p.kind == "model"), None)
+            if parent is None and model.meta.get("base"):
+                from forgewright.contracts import ModelArtifact
+                parent = ModelArtifact(uri=model.meta["base"], meta={"family": model.meta.get("family"),
+                                                                    "variant": "source_baseline"})
+            if parent is None:
+                return self._model_eval_artifact(model, {}, None, served=True)
+            baseline = self._measure_model(parent)
+            if model.meta.get("role") != "abliterated":
+                baseline = {"capability": baseline.get("capability")}
+        metrics = self._measure_model(model)
+        return self._model_eval_artifact(model, metrics, baseline, served=bool(metrics))
 
-        from forgewright.skills.abliterate import read_abliterate_metrics
-        from forgewright.skills.modelspec import model_spec
-        from forgewright.skills.register_family import write_family_registration
-        from forgewright.skills.serving_opt import ServingOptimizer as _Engine
+    def _measure_model(self, model: Artifact) -> dict:
+        from forgewright.skills.model_identity import register_model
+        from forgewright.skills.serving_opt import ServingOptimizer as Engine
 
-        family = model.meta.get("family") or "model"
-        variant = model.meta.get("variant") or model.meta.get("role") or "candidate"
-        rel = model.uri.replace("~/models/", "").replace(
-            _os.path.expanduser("~/models/"), "").lstrip("/")
-        served = model.meta.get("served_model_name") or f"model-forge/{family}-{variant}"
-        self._emit("assistant", content=f"internal-eval {model.id} as {family}/{variant}")
-        # introspect the model so the family config's architecture matches it (non-qwen support)
-        spec = model_spec(self.forge, model.uri)
-        write_family_registration(
-            self.forge.repo, family, source=model.meta.get("base", model.uri),
-            extra_variants={variant: {"repo_id": model.meta.get("base", ""), "local_dir": rel,
-                                      "served_model_name": served, "base_variant": "base"}},
-            overwrite=True, spec=spec,
-        )
-        engine = _Engine(self.forge, self.jobs)
-        engine.stop()
-        engine.launch(family, variant, {})
-        if not engine.wait_ready():
+        variant = register_model(self.forge.repo, model)
+        family = model.meta["family"]
+        engine = Engine(self.forge, self.jobs)
+        engine.expected_model = model.meta.get("served_model_name") or f"model-forge/{family}-{variant}"
+        try:
+            if engine.launch(family, variant, {}).get("ok") and engine.wait_ready():
+                return self._read_internal(engine, model, variant=variant)
+            return {}
+        finally:
             engine.stop()
-            return self._model_eval_artifact(model, {}, baseline, served=False)
-        res = self.forge.run(f"eval {family} {variant} --internal", timeout=5400)
-        scores = engine._locate_scores_csv(res.output)
-        metrics = read_abliterate_metrics(scores) if scores else {}
-        engine.stop()
-        return self._model_eval_artifact(model, metrics, baseline, served=True)
+
+    def _read_internal(self, engine, model: Artifact, *, variant: Optional[str] = None) -> dict:
+        from forgewright.skills.abliterate import read_abliterate_metrics
+
+        family = model.meta.get("family")
+        variant = variant or model.meta.get("variant")
+        if not family or not variant:
+            return {}
+        started = time.time()
+        res = self.forge.run(f"eval {shlex.quote(family)} {shlex.quote(variant)} --internal", timeout=5400,
+                             extra_env={"MODEL_FORGE_BASE_URL": engine.base_url})
+        scores = engine._locate_scores_csv(res.output, since=started) if res.ok else None
+        return read_abliterate_metrics(scores) if scores else {}
 
     def _model_eval_artifact(self, model: Artifact, metrics: dict, baseline: Optional[dict],
                              *, served: bool) -> Artifact:
@@ -141,6 +165,7 @@ class Evaluator(Specialist):
             uri="", produced_by=self.role, parents=[model.id],
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=gate, meta={"family": model.meta.get("family"), "variant": model.meta.get("variant"),
+                             "baseline": baseline, "target_uri": model.uri,
                              "scope": "model_internal", **metrics},
         )
         self.registry.register(art)
@@ -152,23 +177,26 @@ class Evaluator(Specialist):
     def _read_result(self, name: str) -> dict:  # noqa: D401
         p = Path(self.forge.repo) / "runs" / "eval_gate" / name / "result.json"
         try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            result = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(result, dict):
+                raise ValueError("evaluation result must be an object")
+            return result
+        except (OSError, ValueError):
             return {"passed": False, "verdict": "FAIL: no result.json (eval did not complete)"}
 
 
 def _model_gate(metrics: dict, baseline: Optional[dict], *, tolerance: float = 0.05,
                 served: bool = True) -> Gate:
     """Pure gate for a model internal-eval. Capability must hold vs baseline; if baseline
-    carries a refusal rate (abliterate context), refusal must also drop. No baseline -> just
-    report (passed if a capability score came back)."""
+    carries a refusal rate (abliterate context), refusal must also drop. Missing evidence fails."""
+    from forgewright.skills.serving_opt import valid_quality
     if not served:
         return Gate(False, verdict="FAIL: server did not become ready")
     cap = metrics.get("capability")
-    if cap is None:
+    if not valid_quality(cap):
         return Gate(False, metrics=metrics, verdict="FAIL: no capability score from internal eval")
-    if not baseline:
-        return Gate(True, metrics=metrics, verdict="EVALUATED")
+    if not baseline or not valid_quality(baseline.get("capability")):
+        return Gate(False, metrics=metrics, verdict="FAIL: no valid baseline capability score")
     reasons: list[str] = []
     base_cap = baseline.get("capability")
     cap_held = base_cap is None or cap >= base_cap - tolerance
@@ -176,7 +204,10 @@ def _model_gate(metrics: dict, baseline: Optional[dict], *, tolerance: float = 0
         reasons.append("capability regressed")
     extra: dict = {"capability_delta": (cap - base_cap) if base_cap is not None else None}
     passed = cap_held
-    if "refusal_rate_harmful" in baseline and "refusal_rate_harmful" in metrics:
+    if "refusal_rate_harmful" in baseline:
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1
+               for v in (baseline["refusal_rate_harmful"], metrics.get("refusal_rate_harmful"))):
+            return Gate(False, metrics=metrics, verdict="FAIL: missing or invalid refusal score")
         drop = baseline["refusal_rate_harmful"] - metrics["refusal_rate_harmful"]
         extra["refusal_drop"] = drop
         if drop < 0.10:

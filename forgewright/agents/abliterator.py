@@ -111,7 +111,7 @@ class Abliterator(Specialist):
             gate=Gate(passed=ok, metrics={"exit_code": (final or {}).get("exit_code"),
                                           "strength": strength, "fresh_weights": fresh},
                       verdict=verdict),
-            meta={"role": "abliterated", "family": family, "base": source},
+            meta={"role": "abliterated", "family": family, "base": source, "variant": name},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok, output=f"abliterated ModelArtifact {art.id}")

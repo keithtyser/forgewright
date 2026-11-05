@@ -24,12 +24,23 @@ function loadCreds() {
   try { return JSON.parse(fs.readFileSync(credsPath(), 'utf8')) || {}; } catch (e) { return {}; }
 }
 function saveCreds(creds) {
+  let temporary;
   try {
     fs.mkdirSync(fwHome(), { recursive: true });
-    fs.writeFileSync(credsPath(), JSON.stringify(creds, null, 2), 'utf8');
-    try { fs.chmodSync(credsPath(), 0o600); } catch (e) {}
+    temporary = path.join(fwHome(), '.secret-' + require('crypto').randomUUID());
+    fs.writeFileSync(temporary, '', { mode: 0o600, flag: 'wx' });
+    if (process.platform === 'win32') {
+      const { execFileSync } = require('child_process');
+      const identity = execFileSync('whoami', ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+      const sid = identity.match(/S-1-\d+(?:-\d+)+/);
+      if (!sid) throw new Error('Cannot identify the current Windows user');
+      execFileSync('icacls', [temporary, '/inheritance:r', '/grant:r', '*' + sid[0] + ':(F)'], { windowsHide: true });
+    }
+    fs.writeFileSync(temporary, JSON.stringify(creds, null, 2), 'utf8');
+    fs.renameSync(temporary, credsPath());
     return true;
   } catch (e) { return false; }
+  finally { if (temporary && fs.existsSync(temporary)) fs.unlinkSync(temporary); }
 }
 function envFromCreds(creds) {
   const env = {};

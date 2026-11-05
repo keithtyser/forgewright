@@ -8,7 +8,8 @@ regression never silently flows downstream.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import copy
 from typing import Callable, Optional, Sequence
 
 from forgewright.agents.base import Specialist, label_reporter
@@ -68,6 +69,7 @@ class Director:
         brain=None,
         host: Optional[str] = None,
         memory: Optional[OutcomeMemory] = None,
+        interrupt=None,
     ) -> None:
         self.registry = registry or Registry()
         self.reporter = label_reporter(reporter, self.role)
@@ -76,6 +78,7 @@ class Director:
         self.ledger = ledger
         self.brain = brain
         self.host = host
+        self.interrupt = interrupt
         # the cross-run learning loop: every gated stage is recorded here, and repair policies +
         # the planner read it back to ground future runs.
         self.memory = memory or OutcomeMemory()
@@ -93,6 +96,16 @@ class Director:
     def run_recipe(
         self, goal: str, recipe: Sequence[Step], seed_inputs: Optional[Sequence[Artifact]] = None
     ) -> DirectorResult:
+        from filelock import FileLock, Timeout
+        try:
+            with FileLock(str(self.registry.path) + ".recipe.lock", timeout=0):
+                return self._run_recipe(goal, recipe, seed_inputs)
+        except Timeout:
+            return DirectorResult(False, [], failed_at="preflight", reason="Another recipe owns this registry")
+
+    def _run_recipe(
+        self, goal: str, recipe: Sequence[Step], seed_inputs: Optional[Sequence[Artifact]] = None
+    ) -> DirectorResult:
         """Execute the chain, gated globally, with a two-level generate -> verify -> repair loop:
 
           1. SELF-REPAIR: a stage that fails its OWN gate is re-run with repaired run_kwargs, up to
@@ -107,6 +120,31 @@ class Director:
 
         Returns the produced artifacts (lineage) + final."""
         current: list[Artifact] = list(seed_inputs or [])
+        recipe = [replace(step, init_kwargs=dict(step.init_kwargs),
+                          run_kwargs=copy.deepcopy(step.run_kwargs)) for step in recipe]
+        if self.host:
+            return DirectorResult(False, [], failed_at="preflight",
+                                  reason="Remote recipes are not supported; run on the GPU host")
+        for artifact in current:
+            if self.registry.get(artifact.id) is None:
+                self.registry.register(artifact)
+        journal = None
+        if self.ledger:
+            from forgewright.agents.journal import RecipeJournal
+            journal = RecipeJournal(self.ledger.path.parent / "recipes", self.ledger.run_id,
+                                     goal, recipe, current)
+            if journal.state.get("status") in ("active", "failed", "interrupted"):
+                return DirectorResult(False, [], failed_at="recovery", reason=
+                    f"Reconcile the previous stage before retrying: {journal.path}")
+            if journal.state.get("status") == "complete":
+                artifacts = [self.registry.get(aid) for aid in journal.state.get("artifacts", [])]
+                if any(a is None for a in artifacts):
+                    return DirectorResult(False, [], failed_at="recovery", reason="Missing registered artifact")
+                found = [a for a in artifacts if a is not None]
+                if any(a.kind == "served_endpoint" for a in found):
+                    return DirectorResult(False, found, failed_at="recovery",
+                        reason="Saved endpoint receipts require a fresh health and quality check")
+                return DirectorResult(True, found, final=found[-1] if found else None)
         produced: list[Artifact] = []
         completed: list[tuple[Step, Artifact, int]] = []   # (step, art, idx) of stages that PASSED
         inputs_at: dict[int, list[Artifact]] = {}          # idx -> the `current` list when it ran
@@ -118,12 +156,25 @@ class Director:
 
         i = 0
         while i < len(recipe):
+            if self.interrupt and self.interrupt():
+                self._compensate([(s, a) for s, a, _ in completed])
+                if journal:
+                    journal.save(status="interrupted", index=i, artifacts=[a.id for a in produced])
+                return DirectorResult(False, produced, failed_at="interrupt", reason="Interrupted")
             step = recipe[i]
             role = step.specialist_cls.role
             attempt = attempts.get(i, 0) + 1
             attempts[i] = attempt
             inputs_at[i] = list(current)
+            if journal:
+                journal.save(status="active", index=i, role=role, attempt=attempt,
+                             inputs=[a.id for a in current], params=step.run_kwargs,
+                             artifacts=[a.id for a in produced])
             art, passed = self._run_attempt(step, current, goal, i, total, attempt)
+            if journal:
+                journal.state["receipts"].append({"index": i, "artifact": art.id if art else None,
+                                                  "passed": passed, "attempt": attempt})
+                journal.save()
             if art is not None:
                 produced.append(art)
             if passed:
@@ -142,7 +193,7 @@ class Director:
                 current = inputs_at[i]            # re-run the same stage with adjusted kwargs
                 continue
             # 2) upstream-repair: re-run the transform that produced what this gate evaluated
-            j = self._upstream_transform(completed)
+            j = self._upstream_transform(completed) if step.specialist_cls.produces == "eval" else None
             if j is not None and self._try_repair(recipe[j], attempts.get(j, 1), art,
                                                   recipe[j].specialist_cls.role, upstream=True):
                 completed = [(s, a, k) for (s, a, k) in completed if k < j]   # rewind
@@ -153,9 +204,13 @@ class Director:
             self._emit("stage", name=role, index=i, total=total, state="failed")
             self._emit("assistant", content=f"GLOBAL GATE halt at {role}: {reason}")
             self._compensate([(s, a) for (s, a, _k) in completed])
+            if journal:
+                journal.save(status="failed", artifacts=[a.id for a in produced])
             return DirectorResult(False, produced, failed_at=role, reason=reason)
 
         final = produced[-1] if produced else None
+        if journal:
+            journal.save(status="complete", artifacts=[a.id for a in produced])
         self._emit("assistant", content=f"recipe complete: {len(produced)} artifacts, "
                    f"lineage {[a.id for a in produced]}")
         return DirectorResult(True, produced, final=final)
@@ -200,9 +255,21 @@ class Director:
         if not raised:
             self._emit("artifact", role=art.produced_by or role, kind=art.kind, id=art.id,
                        parents=list(art.parents), metrics=gate_metrics, passed=gate_passed)
-        self._record_outcome(role, family, step.run_kwargs, gate_passed, gate_metrics, verdict,
+        if self.registry.get(art.id) is None:
+            self.registry.register(art)
+        if role == "Evaluator" and current:
+            parent = current[0]
+            previous = next((r for r in self.memory.recall(stage=parent.produced_by, family=family)
+                             if r.get("artifact_id") == parent.id), {})
+            self.memory.record(stage=parent.produced_by, family=family, params=previous.get("params", {}),
+                               passed=gate_passed, metrics=gate_metrics, verdict=verdict,
+                               artifact_id=parent.id, run_id=(self.ledger.run_id if self.ledger else ""))
+        memory_passed = gate_passed
+        if role in {"SFTTrainer", "RLTrainer", "Merger", "Abliterator", "Quantizer"} and gate_passed:
+            memory_passed = None  # Output exists; quality is pending the Evaluator.
+        self._record_outcome(role, family, step.run_kwargs, memory_passed, gate_metrics, verdict,
                              ("" if raised else art.id), attempt)
-        return art, (art.gate is None or art.gate.passed)
+        return art, (art.gate is not None and art.gate.passed)
 
     def _try_repair(self, step: Step, attempt_used: int, failed_art: Artifact, role: str,
                     *, upstream: bool) -> bool:

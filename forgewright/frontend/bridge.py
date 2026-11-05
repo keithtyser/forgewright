@@ -106,7 +106,7 @@ def event_reporter(emit: Callable[[dict], None]) -> Callable[[str, dict], None]:
 class StreamApprover:
     """`PermissionPolicy.ask_fn` over the stream: emit an approval_request, block on the
     matching approval_response. Returns the decision string ('yes'|'all'|'yolo'|'no') so the
-    policy can remember 'all' (this tool) or 'yolo' (everything). `read_response` returns the
+    policy can remember 'all' (same tool and arguments) or 'yolo' (everything). `read_response` returns the
     next UI->backend message dict (the frontend prompts the human and sends the decision)."""
 
     def __init__(self, emit: Callable[[dict], None], read_response: Callable[[], Optional[dict]]) -> None:
@@ -114,8 +114,11 @@ class StreamApprover:
         self.read_response = read_response
 
     def __call__(self, tool: Any, args: dict[str, Any]) -> str:
+        import uuid
+        request_id = uuid.uuid4().hex
         self.emit({
             "type": "approval_request",
+            "request_id": request_id,
             "tool": getattr(tool, "name", str(tool)),
             "risk": getattr(tool, "risk", ""),
             "args": args,
@@ -124,7 +127,7 @@ class StreamApprover:
             msg = self.read_response()
             if msg is None:                       # stream closed -> deny (fail safe)
                 return "no"
-            if msg.get("type") == "approval_response":
+            if msg.get("type") == "approval_response" and msg.get("request_id") == request_id:
                 if msg.get("decision"):
                     return str(msg["decision"]).lower()
                 return "yes" if msg.get("approved") else "no"

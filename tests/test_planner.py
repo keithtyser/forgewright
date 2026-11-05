@@ -29,13 +29,13 @@ def test_valid_chain_from_goal():
 
 
 def test_valid_chain_from_model_seed():
-    ok, _ = validate_chain(["Abliterator", "Quantizer", "Evaluator", "Publisher"], "model")
+    ok, _ = validate_chain(["Abliterator", "Evaluator", "Quantizer", "Evaluator", "Publisher"], "model")
     assert ok
 
 
 def test_invalid_chain_type_mismatch():
     # SFTTrainer produces an adapter, Abliterator needs a model -> invalid handoff
-    ok, reason = validate_chain(["DataCurator", "SFTTrainer", "Abliterator"], None)
+    ok, reason = validate_chain(["DataCurator", "SFTTrainer", "Evaluator", "Abliterator"], None)
     assert not ok and "Abliterator" in reason
 
 
@@ -72,10 +72,10 @@ def test_plan_stages_none_on_garbage():
 
 # --- build_plan -> steps + seed --------------------------------------------
 def test_build_plan_makes_steps_and_model_seed(tmp_path):
-    brain = _Brain('[{"role": "Abliterator"}, {"role": "Quantizer"}, {"role": "Evaluator"}]')
+    brain = _Brain('[{"role": "Abliterator"}, {"role": "Evaluator"}, {"role": "Quantizer"}, {"role": "Evaluator"}]')
     reg = Registry(tmp_path / "r.jsonl")
     steps, seed = build_plan("uncensor then quantize", {"model_uri": "/m/Qwen", "family": "q"}, reg, brain)
-    assert [s.specialist_cls.role for s in steps] == ["Abliterator", "Quantizer", "Evaluator"]
+    assert [s.specialist_cls.role for s in steps] == ["Abliterator", "Evaluator", "Quantizer", "Evaluator"]
     assert len(seed) == 1 and isinstance(seed[0], ModelArtifact) and seed[0].uri == "/m/Qwen"
     assert steps[0].run_kwargs == {}   # no abliterate params given
 

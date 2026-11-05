@@ -48,6 +48,7 @@ class ForgeRunner:
                 {"missing": True},
             )
         env = dict(os.environ)
+        env.update(NO_COLOR="1", COLUMNS="4096")
         if dry_run:
             env["MODEL_FORGE_DRY_RUN"] = "1"
         if extra_env:
@@ -66,7 +67,7 @@ class ForgeRunner:
             proc.returncode == 0,
             body or f"(exit {proc.returncode})",
             {"exit_code": proc.returncode, "args": args, "dry_run": dry_run},
-        ).truncate(16000)
+        )
 
 
 class ForgeTool(Tool):
@@ -94,7 +95,9 @@ class ForgeTool(Tool):
         self.runner = runner or ForgeRunner()
 
     def run(self, args: str, dry_run: bool = False, timeout: int = 3600, **_: Any) -> ToolResult:
-        return self.runner.run(args, dry_run=dry_run, timeout=timeout)
+        if any(token.startswith("publish-") for token in shlex.split(args)):
+            return ToolResult(False, "Use forge_publish for publication commands")
+        return self.runner.run(args, dry_run=dry_run, timeout=timeout).truncate(16000)
 
 
 class ForgePublishTool(Tool):

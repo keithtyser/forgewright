@@ -45,8 +45,12 @@ def _closed_think_ok(text: str) -> bool:
 
 
 def _valid_messages(row: dict) -> bool:
+    if not isinstance(row, dict):
+        return False
     msgs = row.get("messages")
     if not isinstance(msgs, list) or not msgs:
+        return False
+    if any(not isinstance(m, dict) or not isinstance(m.get("role"), str) for m in msgs):
         return False
     roles = {m.get("role") for m in msgs}
     if not ({"user", "assistant"} <= roles):
@@ -124,26 +128,45 @@ class DataCurator(Specialist):
             seed_paths: Optional[Sequence[str]] = None, family: str = "model",
             source: str = "Qwen/Qwen3.5-0.8B", run_name: Optional[str] = None,
             holdout: Optional[str] = None, out_path: Optional[str] = None,
-            provider: str = "template") -> Artifact:
+            provider: Optional[str] = None, smoke: bool = False) -> Artifact:
+        self.validate_inputs(inputs)
         run_name = run_name or f"{family}_curated_v0"
         if mode == "distill":
+            if provider not in ("template", "openai_compatible"):
+                raise ValueError("Distillation requires an explicit provider: template or openai_compatible")
             seeds = list(seed_paths or [])
             if not seeds:
                 raise ValueError("distill mode needs seed_paths (the seed JSONL to expand from)")
-            return self._distill(goal, family, source, run_name, seed_path=seeds[0], provider=provider)
+            result = self._distill(goal, family, source, run_name, seed_path=seeds[0], provider=provider, smoke=smoke)
+            if holdout:
+                clean = self._curate_seed([result.uri], family, source, run_name, holdout, out_path)
+                derived = DatasetArtifact(uri=clean.uri, produced_by=self.role, parents=[result.id, clean.id],
+                    gate=clean.gate, meta={**clean.meta, "mode": "distill", "provider": provider,
+                                          "simulation": provider == "template"})
+                return self.registry.register(derived)
+            return result
         return self._curate_seed(seed_paths or [], family, source, run_name, holdout, out_path)
 
     def _curate_seed(self, seed_paths, family, source, run_name, holdout, out_path) -> Artifact:
+        from forgewright.skills.data_integrity import data_path, prompt_keys, read_rows
+
         repo = Path(self.forge.repo)
-        rel_out = out_path or f"datasets/finetuning/{run_name}.jsonl"
+        import uuid
+        rel_out = out_path or f"datasets/finetuning/{run_name}_{uuid.uuid4().hex[:12]}.jsonl"
         dst = repo / rel_out
         dst.parent.mkdir(parents=True, exist_ok=True)
         rows: list[dict] = []
         for sp in seed_paths:
             p = Path(sp) if Path(sp).is_absolute() else repo / sp
-            if p.exists():
-                rows.extend(_read_jsonl(p))
+            rows.extend(read_rows(p))
         kept, drops = curate_messages_rows(rows)
+        if holdout:
+            held = set().union(*(prompt_keys(row) for row in read_rows(data_path(repo, holdout))))
+            if not held:
+                raise ValueError("Holdout contains no prompts")
+            clean = [row for row in kept if not prompt_keys(row) & held]
+            drops["holdout_overlap"] = len(kept) - len(clean)
+            kept = clean
         dst.write_text("\n".join(json.dumps(r) for r in kept) + ("\n" if kept else ""), encoding="utf-8")
         self._emit("tool", tool="curate", ok=bool(kept),
                    output=f"curated {len(kept)} rows (dropped {drops}) -> {rel_out}")
@@ -159,7 +182,7 @@ class DataCurator(Specialist):
         return art
 
     def _distill(self, goal, family, source, run_name, *, seed_path: str, provider: str = "template",
-                 variant: str = "curated_v0") -> Artifact:
+                 variant: str = "curated_v0", smoke: bool = False) -> Artifact:
         """Teacher-distillation via the data factory. provider='template' validates the
         pipeline with no LLM; provider='openai_compatible' uses a teacher endpoint (set the
         provider's *_env vars, e.g. OpenRouter/local vLLM) for real <think> CoT."""
@@ -168,7 +191,8 @@ class DataCurator(Specialist):
         write_dataset_config(self.forge.repo, family, seed_path=seed_path, variant=variant, overwrite=True)
         self._emit("assistant", content=f"distill {family}/{variant} via factory (provider={provider})")
         for step in ["generate", "judge", "verify", "filter", "pack"]:
-            res = self.forge.run(f"data {step} {family} {variant} --smoke --provider {provider}", timeout=3600)
+            flag = " --smoke" if smoke else ""
+            res = self.forge.run(f"data {step} {family} {variant}{flag} --provider {provider}", timeout=3600)
             self._emit("tool", tool=f"data {step}", ok=res.ok, output=res.output[:160])
             if not res.ok:
                 raise RuntimeError(f"data {step} failed: {res.output[:300]}")
@@ -179,7 +203,7 @@ class DataCurator(Specialist):
             gate=Gate(passed=rows > 0, metrics={"rows": rows},
                       verdict="DISTILLED" if rows > 0 else "FAIL: factory produced no rows"),
             meta={"family": family, "source": source, "run_name": run_name, "format": "messages",
-                  "mode": "distill", "provider": provider, "rows": rows},
+                  "mode": "distill", "provider": provider, "rows": rows, "simulation": provider == "template"},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=rows > 0, output=f"DatasetArtifact {art.id} ({rows} rows)")

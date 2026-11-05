@@ -71,7 +71,7 @@ def test_serve_stdio_streams_turn_and_approval():
     # the approval was granted -> the publish tool event reports ok
     objs = [json.loads(l) for l in outstream.getvalue().splitlines() if l.strip()]
     pub = [o for o in objs if o.get("type") == "tool" and o.get("tool") == "forge_publish"][0]
-    assert pub["ok"] is True
+    assert pub["ok"] is False  # an uncorrelated, pre-sent approval must not authorize a call
 
 
 def test_serve_stdio_interrupt_sets_event_before_turn():

@@ -46,11 +46,46 @@ def _pid_alive_local(pid: Any) -> bool:
         return False
 
 
+def _process_identity(pid: int, host: str | None = None) -> str | None:
+    """Return the process creation time, so a reused PID cannot own an old job."""
+    try:
+        if host or os.name != "nt":
+            if host:
+                result = subprocess.run(ssh_args(host) + [f"cat /proc/{pid}/stat"],
+                                        capture_output=True, text=True, timeout=30)
+                if result.returncode != 0:
+                    return None
+                stat = result.stdout
+            else:
+                stat = Path(f"/proc/{pid}/stat").read_text()
+            return stat.rsplit(")", 1)[1].split()[19]
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        handle = kernel.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+                return None
+            return str((times[0].dwHighDateTime << 32) | times[0].dwLowDateTime)
+        finally:
+            kernel.CloseHandle(handle)
+    except (OSError, IndexError, subprocess.SubprocessError):
+        return None
+
+
 class JobManager:
     """Shared backend for the job tools. Records persist as JSON under the jobs dir."""
 
     def __init__(self) -> None:
         self.dir = _jobs_dir()
+        self.interrupt = None
 
     def _rec(self, jid: str) -> Path:
         return self.dir / f"{jid}.json"
@@ -62,7 +97,10 @@ class JobManager:
         return self.dir / f"{jid}.code"
 
     def _save(self, rec: dict) -> None:
-        self._rec(rec["id"]).write_text(json.dumps(rec, indent=2), encoding="utf-8")
+        dst = self._rec(rec["id"])
+        tmp = dst.with_suffix(".tmp")
+        tmp.write_text(json.dumps(rec, indent=2), encoding="utf-8")
+        tmp.replace(dst)
 
     def _read(self, jid: str) -> Optional[dict]:
         p = self._rec(jid)
@@ -87,19 +125,23 @@ class JobManager:
             "started_at": time.time(),
             "finished_at": None,
         }
+        rec["status"] = "launching"
+        self._save(rec)
+        rec["status"] = "running"
         if host:
             workdir = cwd or "~/forgewright-runs"
             rlog, rcode = f"{workdir}/{jid}.log", f"{workdir}/{jid}.code"
-            inner = shlex.quote(f"{command} ; echo $? > {rcode}")
-            wrapped = f"mkdir -p {workdir} && nohup bash -lc {inner} > {rlog} 2>&1 & echo $!"
-            proc = subprocess.run(["ssh", host, wrapped], capture_output=True, text=True, timeout=60)
+            inner = shlex.quote(f"( {command} ); echo $? > {shell_path(rcode)}")
+            wrapped = (f"mkdir -p {shell_path(workdir)} && cd {shell_path(workdir)} && "
+                       f"{{ nohup setsid bash -c {inner} > {shell_path(rlog)} 2>&1 < /dev/null & echo $!; }}")
+            proc = subprocess.run(ssh_args(host) + [wrapped], capture_output=True, text=True, timeout=60)
             pid = proc.stdout.strip().splitlines()[-1] if (proc.returncode == 0 and proc.stdout.strip()) else None
             rec.update(pid=pid, remote_log=rlog, remote_code=rcode, workdir=workdir)
-            if proc.returncode != 0:
+            if proc.returncode != 0 or not str(pid).isdigit():
                 rec.update(status="error", launch_error=(proc.stderr or "ssh launch failed").strip())
         else:
             log, code = self._log(jid), self._code(jid)
-            wrapped = f"{{ {command} ; }} > {shlex.quote(str(log))} 2>&1 ; echo $? > {shlex.quote(str(code))}"
+            wrapped = f"( {command} ) > {shlex.quote(str(log))} 2>&1 ; echo $? > {shlex.quote(str(code))}"
             kwargs: dict[str, Any] = {"creationflags": 0}
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
@@ -110,6 +152,8 @@ class JobManager:
                 rec.update(pid=proc2.pid)
             except FileNotFoundError:
                 rec.update(status="error", launch_error="bash not found on PATH for local detached job")
+        if rec["status"] == "running" and rec.get("pid"):
+            rec["process_identity"] = _process_identity(int(rec["pid"]), host)
         self._save(rec)
         return rec
 
@@ -128,7 +172,7 @@ class JobManager:
             alive = _pid_alive_local(rec.get("pid"))
         else:
             r = subprocess.run(
-                ["ssh", rec["host"], f"cat {rec['remote_code']} 2>/dev/null"],
+                ssh_args(rec["host"]) + [f"cat {shell_path(rec['remote_code'])} 2>/dev/null"],
                 capture_output=True, text=True, timeout=30,
             )
             if r.returncode == 0 and r.stdout.strip():
@@ -136,7 +180,16 @@ class JobManager:
                     code = int(r.stdout.strip())
                 except ValueError:
                     code = None
-            alive = code is None  # no cheap remote pid check; trust the sentinel
+            if code is None:
+                check = subprocess.run(ssh_args(rec["host"]) + [f"kill -0 {int(rec['pid'])} 2>/dev/null"],
+                                       capture_output=True, text=True, timeout=30)
+                if check.returncode not in (0, 1):
+                    rec["status_error"] = "SSH status unavailable"
+                    self._save(rec)
+                    return rec
+                alive = check.returncode == 0
+            else:
+                alive = False
         if code is not None:
             rec.update(status="finished", exit_code=code, finished_at=time.time())
         elif not alive:
@@ -144,16 +197,29 @@ class JobManager:
         self._save(rec)
         return rec
 
-    def wait(self, jid: str, *, timeout_s: int = 14400, interval_s: int = 20) -> Optional[dict]:
+    def wait(self, jid: str, *, timeout_s: int = 14400, interval_s: int = 20,
+             interrupt=None) -> Optional[dict]:
         """Block until the job reaches a terminal state (or timeout). Returns the final
         record. Used by synchronous specialist stages that must complete before handing
         off the produced artifact."""
         deadline = time.time() + timeout_s
+        interrupt = interrupt or self.interrupt
         while time.time() < deadline:
+            if interrupt and interrupt():
+                self.kill(jid)
+                return self.status(jid)
             rec = self.status(jid)
             if not rec or rec["status"] in ("finished", "ended", "killed", "error"):
                 return rec
-            time.sleep(interval_s)
+            for _ in range(max(1, interval_s)):
+                if interrupt and interrupt():
+                    break
+                time.sleep(1)
+        rec = self._read(jid)
+        if rec:
+            rec["wait_timed_out"] = True
+            self._save(rec)
+        self.kill(jid)
         return self.status(jid)
 
     def tail(self, jid: str, n: int = 80) -> str:
@@ -166,31 +232,66 @@ class JobManager:
                 return "(no log yet)"
             return "\n".join(lp.read_text(encoding="utf-8", errors="replace").splitlines()[-n:])
         r = subprocess.run(
-            ["ssh", rec["host"], f"tail -n {n} {rec['remote_log']} 2>/dev/null"],
+            ssh_args(rec["host"]) + [f"tail -n {int(n)} {shell_path(rec['remote_log'])} 2>/dev/null"],
             capture_output=True, text=True, timeout=30,
         )
         return r.stdout or "(no log yet)"
 
     def kill(self, jid: str) -> bool:
         rec = self._read(jid)
-        if not rec or not rec.get("pid"):
+        if not rec or not rec.get("pid") or rec["status"] in ("finished", "ended", "killed", "error"):
+            return False
+        host = None if rec["host"] == "local" else rec["host"]
+        identity = _process_identity(int(rec["pid"]), host)
+        if not identity or identity != rec.get("process_identity"):
+            rec["cancel_error"] = "Process identity is missing or changed; cancellation refused"
+            self._save(rec)
             return False
         try:
             if rec["host"] == "local":
                 if os.name == "nt":
-                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(rec["pid"])], capture_output=True)
+                    result = subprocess.run(["taskkill", "/F", "/T", "/PID", str(int(rec["pid"]))], capture_output=True)
+                    if result.returncode != 0:
+                        return False
                 else:
-                    os.killpg(int(rec["pid"]), 15)
+                    getattr(os, "killpg")(int(rec["pid"]), 15)
             else:
-                subprocess.run(["ssh", rec["host"], f"kill {rec['pid']}"], capture_output=True, timeout=30)
+                result = subprocess.run(ssh_args(rec["host"]) + [f"kill -- -{int(rec['pid'])}"],
+                                        capture_output=True, timeout=30)
+                if result.returncode != 0:
+                    return False
         except Exception:  # noqa: BLE001
             return False
-        rec.update(status="killed", finished_at=time.time())
+        rec.update(status="stopping", cancel_requested_at=time.time())
         self._save(rec)
-        return True
+        # Sending a signal is not proof that the process has stopped.
+        for _ in range(10):
+            current = _process_identity(int(rec["pid"]), host)
+            if current is None and host:
+                break  # A lost SSH connection is not proof of termination.
+            if current != identity:
+                rec.update(status="killed", finished_at=time.time())
+                self._save(rec)
+                return True
+            time.sleep(0.1)
+        return False
 
     def list(self) -> list[dict]:
         return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.dir.glob("*.json"))]
+
+
+def shell_path(path: str) -> str:
+    """Quote a POSIX path while allowing only a leading home-directory expansion."""
+    return '"$HOME"/' + shlex.quote(path[2:]) if path.startswith("~/") else shlex.quote(path)
+
+
+def ssh_args(host: str) -> list[str]:
+    if not host or host.startswith("-") or any(c.isspace() for c in host):
+        raise ValueError("Invalid SSH host")
+    if ":" in host:
+        name, port = host.rsplit(":", 1)
+        return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-p", str(int(port)), name]
+    return ["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", host]
 
 
 # --- Tools (share one JobManager instance, wired by the CLI) ---------------------

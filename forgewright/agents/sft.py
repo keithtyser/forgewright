@@ -51,12 +51,19 @@ class SFTTrainer(Specialist):
             MonitorJobTool(self.jobs), TailLogsTool(self.jobs),
         ])
 
-    def run(self, inputs: Sequence[Artifact], goal: str = "", *, max_steps: int = 60) -> Artifact:
+    def run(self, inputs: Sequence[Artifact], goal: str = "", *, max_steps: int = 60,
+            target_samples: Optional[int] = None) -> Artifact:
         self.validate_inputs(inputs)
         dataset = next(a for a in inputs if a.kind == "dataset")
+        from forgewright.skills.data_integrity import verify_split
+        provenance = verify_split(self.forge.repo, dataset.uri, dataset.meta.get("holdout"))
+        target_samples = target_samples or provenance["rows"]
+        if not 0 < target_samples <= provenance["rows"]:
+            raise ValueError("target_samples must be within the training dataset size")
         family = dataset.meta.get("family") or "model"
         source = dataset.meta.get("source") or "Qwen/Qwen3.5-0.8B"
-        name = dataset.meta.get("run_name") or f"{family}_uplift_v0"
+        import uuid
+        name = (dataset.meta.get("run_name") or f"{family}_uplift") + "_" + uuid.uuid4().hex[:12]
 
         self._emit("assistant", content=f"SFT on {source} from dataset {dataset.id} ({dataset.uri})")
         # attach LoRA to the modules this architecture actually has (default decoder-LLM set if unknown)
@@ -66,12 +73,14 @@ class SFTTrainer(Specialist):
             self.forge.repo, family, name=name, source=source,
             data_path=dataset.uri, max_steps=max_steps, save_steps=max_steps, overwrite=True,
             lora_target_modules=lora_targets,
+            target_samples=target_samples,
         )
         prep = self.forge.run(f"finetune --config configs/finetuning/{name}.yaml prepare --overwrite", timeout=900)
         if not prep.ok:
             raise RuntimeError(f"finetune prepare failed: {prep.output[:400]}")
 
-        cmd = build_container_train_command(name)
+        from forgewright.skills.execution import container_options
+        cmd = build_container_train_command(name, **container_options(self.forge.repo))
         rec = self.jobs.launch(cmd, host=self.host, cwd=str(self.forge.repo), name=f"sft-{name}")
         self._emit("tool", tool="launch_job", ok=True, output=f"job {rec['id']} training {name}")
         final = self.jobs.wait(rec["id"])
@@ -85,9 +94,11 @@ class SFTTrainer(Specialist):
             config_hash=_hash_file(cfg), run_id=(self.ledger.run_id if self.ledger else ""),
             gate=Gate(passed=ok and loss is not None, metrics={"final_loss": loss, "exit_code": (final or {}).get("exit_code")},
                       verdict="TRAINED" if ok else "FAIL: training did not exit cleanly"),
-            meta={"base": source, "family": family, "method": "sft", "run_name": name},
+            meta={"base": source, "family": family, "method": "sft", "run_name": name,
+                  "holdout": dataset.meta.get("holdout"), "data_provenance": provenance},
         )
         self.registry.register(art)
+        assert art.gate is not None
         self._emit("tool", tool="register_artifact", ok=art.gate.passed,
                    output=f"AdapterArtifact {art.id} (final_loss={loss})")
         return art

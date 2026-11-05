@@ -91,6 +91,8 @@ class RunRecipeTool(Tool):
         # bound by the CLI each turn so the swarm streams into the one transcript + uses the gate
         self.reporter = None
         self.permissions = None
+        self.ledger = None
+        self.interrupt = None
 
     def _note(self, content: str) -> None:
         if self.reporter:
@@ -99,12 +101,15 @@ class RunRecipeTool(Tool):
             except Exception:  # noqa: BLE001
                 pass
 
-    def bind(self, *, reporter=None, permissions=None) -> None:
+    def bind(self, *, reporter=None, permissions=None, ledger=None, interrupt=None) -> None:
         """Wire this turn's transcript reporter + approval policy into the swarm."""
         if reporter is not None:
             self.reporter = reporter
         if permissions is not None:
             self.permissions = permissions
+        self.ledger = ledger
+        self.interrupt = interrupt
+        self.jobs.interrupt = interrupt
 
     def run(self, recipe: str, params: Optional[dict] = None, goal: str = "", **_: Any) -> ToolResult:
         params = params or {}
@@ -139,9 +144,15 @@ class RunRecipeTool(Tool):
                 steps, seed = _resolve(recipe, params, self.registry)
             except Exception as e:  # noqa: BLE001
                 return ToolResult(False, f"recipe setup failed: {e}")
+        for step in steps:
+            step.init_kwargs.setdefault("runner", self.forge)
+            step.init_kwargs.setdefault("jobs", self.jobs)
+            if step.specialist_cls.role == "Publisher":
+                step.init_kwargs.pop("jobs", None)
         director = Director(registry=self.registry, reporter=self.reporter,
                             permissions=self.permissions, host=self.host,
-                            brain=self.brain, memory=self.memory)
+                            brain=self.brain, memory=self.memory, ledger=self.ledger,
+                            interrupt=self.interrupt)
         res = director.run_recipe(goal or recipe, steps, seed)
         lineage = [f"{a.kind}:{a.id}" for a in res.artifacts]
         summary = (f"recipe '{recipe}' {'completed' if res.ok else 'HALTED at ' + res.failed_at}: "

@@ -46,7 +46,7 @@ def uplift_publish(*, family: str, source: str, seed_paths: Sequence[str], holdo
                    ) -> tuple[list[Step], list[Artifact]]:
     """Curate -> SFT -> eval -> human-gated publish."""
     steps, seed = uplift(family=family, source=source, seed_paths=seed_paths, holdout=holdout, max_steps=max_steps)
-    steps.append(Step(Publisher, run_kwargs={"release_class": release_class}))
+    steps.extend([Step(Merger), Step(Evaluator), Step(Publisher, run_kwargs={"release_class": release_class})])
     return steps, seed
 
 
@@ -58,6 +58,7 @@ def quantize_serve(*, model: ModelArtifact, objective: str = "latency",
     quant_kwargs = {"method": method} if method else {}
     return [
         Step(Quantizer, run_kwargs=quant_kwargs, max_attempts=4),
+        Step(Evaluator),
         Step(ServingOptimizer, run_kwargs={"objective": objective},
              compensate=_stop_served_endpoint),
     ], [model]
@@ -65,17 +66,18 @@ def quantize_serve(*, model: ModelArtifact, objective: str = "latency",
 
 def abliterate(*, model: ModelArtifact, strength: float = 3.0) -> tuple[list[Step], list[Artifact]]:
     """Refusal-direction abliteration of an existing model (Evaluator model-gate is a follow-on)."""
-    return [Step(Abliterator, run_kwargs={"strength": strength}, max_attempts=3)], [model]
+    return [Step(Abliterator, run_kwargs={"strength": strength}, max_attempts=3), Step(Evaluator)], [model]
 
 
 def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
-         strength: float = 3.0, max_steps: int = 60, method: str | None = None
+         strength: float = 3.0, max_steps: int = 60, method: str | None = None,
+         include_abliteration: bool = False
          ) -> tuple[list[Step], list[Artifact]]:
     """The full pipeline in one run, with an EVAL gate after EVERY transform so a regression can't
     flow downstream: curate -> SFT -> EVAL -> merge -> abliterate -> EVAL -> quantize -> EVAL ->
     serving-opt -> EVAL. (Merge bridges the adapter->model gap; ServingOptimizer also self-evals
     each serving config, and the final Evaluator held-out-gates the optimized served model.)"""
-    return [
+    steps = [
         Step(DataCurator, run_kwargs={"mode": "curate_seed", "seed_paths": list(seed_paths),
              "family": family, "source": source, "run_name": f"{family}_uplift", "holdout": holdout}),
         Step(SFTTrainer, run_kwargs={"max_steps": max_steps}, max_attempts=2),
@@ -88,14 +90,19 @@ def full(*, family: str, source: str, seed_paths: Sequence[str], holdout: str,
         Step(ServingOptimizer, run_kwargs={"objective": "latency", "eval_each": True},
              compensate=_stop_served_endpoint),
         Step(Evaluator, run_kwargs={"holdout": holdout}),          # 4) optimized served model
-    ], []
+    ]
+    if not include_abliteration:
+        steps = [*steps[:4], *steps[6:]]
+    steps.insert(4, Step(Evaluator))
+    return steps, []
 
 
 def _stop_served_endpoint(art: Artifact) -> None:
     """Saga compensation: tear down a served endpoint if a later step fails."""
-    import subprocess
-
-    subprocess.run(["docker", "rm", "-f", "vllm_node"], capture_output=True)
+    from forgewright.skills.serving_opt import stop_owned_container
+    name = art.meta.get("container_name")
+    if name:
+        stop_owned_container(name)
 
 
 # name -> builder, for discoverability (the brain selects by name later)

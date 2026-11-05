@@ -127,7 +127,11 @@ def choose_quant_method(supported_quant, requested: str | None = None) -> str | 
     supported. Returns None when the GPU supports no quantization (serve bf16 instead)."""
     supported = [m for m in (supported_quant or []) if m in _METHOD_SPEC]
     if requested:
-        return requested if requested in supported else None
+        if requested not in _METHOD_SPEC:
+            raise ValueError(f"Unknown quantization method: {requested}")
+        if supported_quant is not None and requested not in supported:
+            raise ValueError(f"GPU does not support requested method: {requested}")
+        return requested
     return supported[0] if supported else None
 
 
@@ -168,8 +172,7 @@ def scaffold_quant_config(
         kv_cache_dtype = "fp8"
     # de-dupe while preserving order (base keep-list + any extra sensitive modules/layers)
     modules = list(_BASE_EXCLUSIONS) + [m for m in extra_exclusions if m not in _BASE_EXCLUSIONS]
-    seen: set[str] = set()
-    modules = [m for m in modules if not (m in seen or seen.add(m))]
+    modules = list(dict.fromkeys(modules))
     return QUANT_CONFIG_TEMPLATE.format(
         family=family,
         method=method,

@@ -1,6 +1,7 @@
 // Assertions for the shared color/theme layer (run: node lib/theme.test.js).
 'use strict';
 const assert = require('assert');
+delete process.env.NO_COLOR;
 const { makeTheme, resolveThemeName, escMarkup, mkVlen, ansiVlen } = require('./theme');
 
 // dark is the proven palette: must stay byte-identical so the classic UI does not change
@@ -36,7 +37,7 @@ assert.strictEqual(resolveThemeName('light'), 'light');
   process.env.NO_COLOR = '1';
   assert.strictEqual(resolveThemeName(), 'mono');
   process.env.FORGEWRIGHT_THEME = 'light';
-  assert.strictEqual(resolveThemeName(), 'light');   // explicit env beats NO_COLOR
+  assert.strictEqual(resolveThemeName(), 'mono');   // NO_COLOR wins over saved themes
   if (save.t == null) delete process.env.FORGEWRIGHT_THEME; else process.env.FORGEWRIGHT_THEME = save.t;
   if (save.n == null) delete process.env.NO_COLOR; else process.env.NO_COLOR = save.n;
 }

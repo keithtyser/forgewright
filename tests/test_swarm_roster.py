@@ -44,6 +44,10 @@ def test_final_reward_parses():
 
 
 def test_rl_trainer_produces_grpo_adapter(tmp_path):
+    path = tmp_path / "datasets" / "rl"
+    path.mkdir(parents=True)
+    (path / "mult.jsonl").write_text('{"prompt":"2*2?","answer":"4"}')
+    (path / "h.jsonl").write_text('{"prompt":"3*3?","answer":"9"}')
     reg = Registry(tmp_path / "a.jsonl")
     ds = reg.register(DatasetArtifact(uri="datasets/rl/mult.jsonl",
                                       meta={"family": "q08", "source": "Qwen/Qwen3.5-0.8B",
@@ -54,11 +58,15 @@ def test_rl_trainer_produces_grpo_adapter(tmp_path):
     assert art.gate.passed and art.meta["holdout"] == "datasets/rl/h.jsonl"
 
 
-def test_quantizer_produces_quantized_model(tmp_path):
+def test_quantizer_produces_quantized_model(tmp_path, monkeypatch):
+    path = tmp_path / "configs" / "model_families"
+    path.mkdir(parents=True)
+    (path / "qwen35_9b.yaml").write_text('variants: {}')
+    monkeypatch.setattr("forgewright.skills.hostexec.wrote_fresh_weights", lambda *args: True)
     reg = Registry(tmp_path / "a.jsonl")
     jobs = FakeJobs()
     base = reg.register(ModelArtifact(uri="~/models/Qwen3.5-9B", meta={"family": "qwen35_9b", "role": "base"}))
-    art = Quantizer(runner=FakeForge(tmp_path), jobs=jobs, registry=reg).run([base])
+    art = Quantizer(runner=FakeForge(tmp_path), jobs=jobs, registry=reg).run([base], method="nvfp4")
     assert art.kind == "model" and art.meta["role"] == "quantized" and art.parents == [base.id]
     assert art.gate.passed
     assert any("quantize export" in c for c in jobs.launched)            # launched the export job

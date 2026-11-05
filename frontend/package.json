@@ -2,20 +2,31 @@
   "name": "forgewright-tui",
   "version": "0.0.1",
   "private": true,
+  "engines": {
+    "node": ">=22.12"
+  },
   "description": "terminal-kit TUI frontend for the Forgewright post-training swarm",
   "license": "Apache-2.0",
   "author": "Keith Tyser <keithtyser@gmail.com>",
-  "bin": { "forgewright": "forgewright-tui.js", "forgewright-tui": "forgewright-tui.js" },
-  "files": ["forgewright-tui.js", "fullscreen.js", "lib/", "NOTICE", "README.md"],
+  "bin": {
+    "forgewright-tui": "forgewright-tui.js"
+  },
+  "files": [
+    "forgewright-tui.js",
+    "fullscreen.js",
+    "lib/",
+    "NOTICE",
+    "README.md"
+  ],
   "scripts": {
     "start": "node forgewright-tui.js",
     "render-test": "node forgewright-tui.js --render-test",
-    "test": "node lib/render.test.js && node lib/theme.test.js && node lib/ui.test.js"
+    "test": "node lib/render.test.js && node lib/theme.test.js && node lib/ui.test.js && node lib/sanitize.test.js"
   },
   "dependencies": {
-    "terminal-kit": "^3.1.2",
-    "marked": "^12.0.0",
-    "marked-terminal": "^7.1.0",
-    "figlet": "^1.7.0"
+    "figlet": "^1.7.0",
+    "marked": "12.0.2",
+    "marked-terminal": "7.3.1",
+    "terminal-kit": "^3.1.2"
   }
 }

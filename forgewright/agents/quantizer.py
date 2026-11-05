@@ -8,6 +8,10 @@ itself is enforced downstream by the ServingOptimizer/Evaluator (or `forge quant
 from __future__ import annotations
 
 from typing import Optional, Sequence
+import hashlib
+import shlex
+import time
+import uuid
 
 from forgewright.agents.base import Specialist
 from forgewright.contracts import Artifact, Gate, ModelArtifact
@@ -51,7 +55,7 @@ class Quantizer(Specialist):
         ])
 
     def run(self, inputs: Sequence[Artifact], goal: str = "", *,
-            source_variant: str = "base", method: Optional[str] = None,
+            source_variant: Optional[str] = None, method: Optional[str] = None,
             supported_quant: Optional[Sequence[str]] = None,
             calib_samples: Optional[int] = None,
             extra_exclusions: Sequence[str] = (),
@@ -63,7 +67,9 @@ class Quantizer(Specialist):
         family = model.meta.get("family") or "model"
         # choose the method for the GPU's arch (explicit `method` wins; else best of supported_quant;
         # default nvfp4 when nothing is known, i.e. the Blackwell box).
-        chosen = choose_quant_method(supported_quant, method) if (supported_quant or method) else "nvfp4"
+        if supported_quant is None and method is None:
+            raise ValueError("Specify a quantization method or inspected GPU capabilities")
+        chosen = choose_quant_method(supported_quant, method)
         if chosen is None:
             self._emit("assistant", content="this GPU supports no quantization; serving the bf16 model unchanged")
             return self._passthrough(model, family, "NO_QUANT: GPU arch supports no quantization (serve bf16)")
@@ -72,11 +78,18 @@ class Quantizer(Specialist):
                        "lands in Phase 2, skipping export for now")
             return self._passthrough(model, family, f"NO_QUANT: {chosen} export not yet available (serve bf16)")
 
-        target_variant = f"base_{chosen}_modelopt"
+        from forgewright.skills.model_identity import register_model
+        from forgewright.skills.hostexec import wrote_fresh_weights
+
+        registered_variant = model.meta.get("variant")
+        if source_variant and registered_variant and source_variant != registered_variant:
+            raise ValueError("source_variant does not match the input artifact")
+        source_variant = register_model(self.forge.repo, model, variant=source_variant)
+        target_variant = f"{source_variant}_{chosen}_{uuid.uuid4().hex[:10]}"
         # quality-recovery knobs (set by the quantize repair policy on a re-run): keep more in higher
         # precision / improve calibration to hold quality on the SAME method. overwrite=True so a
         # repaired re-run actually rewrites the config.
-        recovery = {k: v for k, v in (
+        recovery: dict = {k: v for k, v in (
             ("calib_samples", calib_samples), ("min_speedup", min_speedup)) if v is not None}
         if extra_exclusions:
             recovery["extra_exclusions"] = tuple(extra_exclusions)
@@ -84,22 +97,27 @@ class Quantizer(Specialist):
             recovery["keep_kv_high_precision"] = True
         note = f" [recovery: {recovery}]" if recovery else ""
         self._emit("assistant", content=f"{chosen} quantize {model.id} (family {family}){note}")
-        write_quant_config(self.forge.repo, family, method=chosen, arch=self.arch,
-                           source_variant=source_variant, overwrite=True, **recovery)
-        cmd = (f"bash forge quantize export {family} {source_variant} "
+        config = write_quant_config(self.forge.repo, family, method=chosen, arch=self.arch,
+                           source_variant=source_variant, target_variant=target_variant,
+                           overwrite=True, **recovery)
+        cmd = (f"bash forge quantize export {shlex.quote(family)} {shlex.quote(source_variant)} "
                f"--config configs/quantization/{quant_config_name(family, chosen)}.yaml --execute")
+        since = time.time()
         rec = self.jobs.launch(cmd, host=self.host, cwd=str(self.forge.repo), name=f"quant-{family}")
         self._emit("tool", tool="launch_job", ok=True, output=f"job {rec['id']} {chosen}-quantizing {family}")
         final = self.jobs.wait(rec["id"])
         ok = bool(final and final.get("exit_code") == 0)
         out = f"~/models/model-forge-quantized/{family}/{target_variant}"
+        ok = ok and wrote_fresh_weights(self.host, out, since)
         art = ModelArtifact(
             uri=out, produced_by=self.role, parents=[model.id],
+            config_hash=hashlib.sha256(config.read_bytes()).hexdigest(),
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=Gate(passed=ok, metrics={"exit_code": (final or {}).get("exit_code"), "method": chosen},
                       verdict="QUANTIZED" if ok else "FAIL: export did not exit cleanly"),
             meta={"role": "quantized", "family": family, "method": f"{chosen}_modelopt",
-                  "variant": target_variant, "served_model_name": f"model-forge/{family}-{target_variant}"},
+                  "variant": target_variant, "source_uri": model.uri, "source_variant": source_variant,
+                  "served_model_name": f"model-forge/{family}-{target_variant}"},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok, output=f"quantized ModelArtifact {art.id}")
@@ -111,7 +129,7 @@ class Quantizer(Specialist):
             uri=model.uri, produced_by=self.role, parents=[model.id],
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=Gate(passed=True, metrics={"method": "none"}, verdict=verdict),
-            meta={"role": "base", "family": family, "method": "none"},
+            meta={**model.meta, "family": family, "method": "none"},
         )
         self.registry.register(art)
         return art

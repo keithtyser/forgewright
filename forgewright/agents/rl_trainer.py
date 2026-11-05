@@ -50,13 +50,17 @@ class RLTrainer(Specialist):
     def run(self, inputs: Sequence[Artifact], goal: str = "", *, max_steps: int = 60) -> Artifact:
         self.validate_inputs(inputs)
         ds = next(a for a in inputs if a.kind == "dataset")
+        from forgewright.skills.data_integrity import verify_split
+        provenance = verify_split(self.forge.repo, ds.uri, ds.meta.get("holdout"))
         source = ds.meta.get("source") or "Qwen/Qwen3.5-0.8B"
         family = ds.meta.get("family") or "model"
-        name = ds.meta.get("run_name") or f"{family}_grpo_v0"
+        import uuid
+        name = (ds.meta.get("run_name") or f"{family}_grpo") + "_" + uuid.uuid4().hex[:12]
         self._emit("assistant", content=f"GRPO on {source} from {ds.id} ({ds.uri})")
         write_grpo_run(self.forge.repo, name, source=source, data_path=ds.uri,
                        max_steps=max_steps, overwrite=True)
-        rec = self.jobs.launch(build_grpo_train_command(name), host=self.host,
+        from forgewright.skills.execution import container_options
+        rec = self.jobs.launch(build_grpo_train_command(name, **container_options(self.forge.repo)), host=self.host,
                                cwd=str(self.forge.repo), name=f"grpo-{name}")
         self._emit("tool", tool="launch_job", ok=True, output=f"job {rec['id']} GRPO {name}")
         final = self.jobs.wait(rec["id"])
@@ -69,6 +73,7 @@ class RLTrainer(Specialist):
             gate=Gate(passed=ok, metrics={"final_reward": reward, "exit_code": (final or {}).get("exit_code")},
                       verdict="TRAINED" if ok else "FAIL: GRPO did not exit cleanly"),
             meta={"base": source, "family": family, "method": "grpo", "run_name": name,
+                  "data_provenance": provenance,
                   **({"holdout": ds.meta["holdout"]} if ds.meta.get("holdout") else {})},
         )
         self.registry.register(art)

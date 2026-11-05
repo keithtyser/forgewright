@@ -20,9 +20,12 @@ import csv
 import re
 import shlex
 import time
+import math
+import uuid
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, TypeGuard
 
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
@@ -129,18 +132,30 @@ class ServingOptimizer:
         self.port = port
         self.base_url = f"http://127.0.0.1:{port}/v1"
         self.quality_tolerance = quality_tolerance
+        self.container_name = "forgewright-" + uuid.uuid4().hex
+        self.expected_model: str | None = None
+        self.best_env: dict[str, str] = {}
+        self._launched = False
+        self._job: str | None = None
 
     # --- launch via model-forge serve + its env hooks --------------------------
 
     def launch(self, family: str, variant: str, env: dict[str, str]) -> dict[str, Any]:
-        import subprocess
+        import socket
 
-        subprocess.run(["docker", "rm", "-f", "vllm_node"], capture_output=True)
-        time.sleep(5)
+        with socket.socket() as sock:
+            if sock.connect_ex(("127.0.0.1", self.port)) == 0:
+                raise RuntimeError(f"Port {self.port} is already in use; refusing to replace another server")
+        env = {**env, "MODEL_FORGE_SPARK_CONTAINER_NAME": self.container_name, "PORT": str(self.port)}
+        env["VLLM_SPARK_EXTRA_DOCKER_ARGS"] = (
+            os.environ.get("VLLM_SPARK_EXTRA_DOCKER_ARGS", "")
+            + f" --label forgewright.owner={self.container_name}")
         prefix = " ".join(f"{k}={shlex.quote(v)}" for k, v in env.items())
-        cmd = (prefix + " " if prefix else "") + f"bash forge serve {family} {variant}"
+        cmd = (prefix + " " if prefix else "") + f"bash forge serve {shlex.quote(family)} {shlex.quote(variant)}"
         rec = self.jobs.launch(cmd, cwd=str(self.forge.repo), name=f"serveopt-{family}-{variant}")
-        return {"ok": True, "job": rec["id"], "command": cmd}
+        self._launched = rec.get("status") != "error"
+        self._job = rec["id"]
+        return {"ok": self._launched, "job": rec["id"], "command": cmd}
 
     def wait_ready(self, timeout_s: int = 600, interval: int = 15) -> bool:
         import httpx
@@ -148,7 +163,9 @@ class ServingOptimizer:
         deadline = time.time() + timeout_s
         while time.time() < deadline:
             try:
-                if httpx.get(f"{self.base_url}/models", timeout=8).status_code == 200:
+                response = httpx.get(f"{self.base_url}/models", timeout=8)
+                ids = {m.get("id") for m in response.json().get("data", [])}
+                if response.status_code == 200 and self.expected_model and self.expected_model in ids:
                     return True
             except Exception:  # noqa: BLE001
                 pass
@@ -156,10 +173,13 @@ class ServingOptimizer:
         return False
 
     def stop(self) -> None:
-        import subprocess
-
-        subprocess.run(["docker", "rm", "-f", "vllm_node"], capture_output=True)
-        time.sleep(5)
+        if self._launched:
+            if self._job:
+                state = self.jobs.status(self._job)
+                if state and state.get("status") == "running" and not self.jobs.kill(self._job):
+                    raise RuntimeError("Could not stop the owned server launcher")
+            stop_owned_container(self.container_name)
+            self._launched = False
 
     # --- measure ---------------------------------------------------------------
 
@@ -169,7 +189,7 @@ class ServingOptimizer:
             f"--base-url {self.base_url} --run-id {run_id}",
             timeout=900,
         )
-        return _parse_metric(res.output, "output_tokens_per_second")
+        return _parse_metric(res.output, "output_tokens_per_second") if res.ok else None
 
     def bench_aggregate(self, served_name: str, *, concurrency: int = 16, requests: int = 48) -> Optional[float]:
         import concurrent.futures
@@ -202,32 +222,27 @@ class ServingOptimizer:
         then read the structured scores.csv it wrote. We parse the CSV (not the rich
         stdout table) so the gate is deterministic even though the metric name recurs
         across buckets."""
-        res = self.forge.run(f"eval {family} {variant} --internal", timeout=5400)
-        scores = self._locate_scores_csv(res.output)
+        started = time.time()
+        res = self.forge.run(f"eval {shlex.quote(family)} {shlex.quote(variant)} --internal", timeout=5400,
+                             extra_env={"MODEL_FORGE_BASE_URL": self.base_url})
+        scores = self._locate_scores_csv(res.output, since=started) if res.ok else None
         if scores is not None:
             v = _scores_csv_metric(scores, self.QUALITY_BUCKET, self.QUALITY_METRIC)
             if v is not None:
                 return v
-        # fall back to stdout scrape if the CSV could not be located/read
-        return _parse_metric(res.output, self.QUALITY_METRIC)
+        return None
 
-    def _locate_scores_csv(self, eval_stdout: str) -> Optional[Path]:
-        """run_eval prints `Output:  <dir>`; scores.csv lives there. Resolve relative
-        paths against the model-forge repo. Fall back to the newest results/**/scores.csv."""
-        m = re.search(r"Output:\s*(\S+)", eval_stdout)
+    def _locate_scores_csv(self, eval_stdout: str, *, since: float = 0) -> Optional[Path]:
+        """Read only the fresh scores file named by this evaluation's output."""
+        m = re.search(r"Output:\s*([^\r\n]+)", eval_stdout)
         if m:
-            p = Path(m.group(1))
+            p = Path(m.group(1).strip().rstrip("│| ").strip())
             if not p.is_absolute():
                 p = Path(self.forge.repo) / p
             csv_path = p / "scores.csv"
-            if csv_path.exists():
+            if csv_path.is_file() and csv_path.stat().st_mtime >= since:
                 return csv_path
-        candidates = sorted(
-            Path(self.forge.repo).glob("results/**/scores.csv"),
-            key=lambda c: c.stat().st_mtime,
-            reverse=True,
-        )
-        return candidates[0] if candidates else None
+        return None
 
     def run(
         self,
@@ -243,21 +258,64 @@ class ServingOptimizer:
         """Sweep candidates: launch -> bench (single + aggregate) -> re-eval (quality
         gate vs source) -> pick the objective's best quality-preserving config."""
         served = served_name or default_served_name(family, variant)
-        cands = candidates or default_candidates(objective)
+        self.expected_model = served
+        if objective not in ("latency", "throughput"):
+            raise ValueError("objective must be latency or throughput")
+        cands = list(candidates or default_candidates(objective))
+        if source_quality is None and eval_each:
+            cands = [Candidate("baseline", {})] + [c for c in cands if c.name != "baseline"]
         results: list[CandidateResult] = []
         for c in cands:
-            launch = self.launch(family, variant, c.env)
-            if not launch.get("ok") or not self.wait_ready():
-                results.append(CandidateResult(c.name, served=False, detail="server did not become ready"))
+            try:
+                launch = self.launch(family, variant, c.env)
+                if not launch.get("ok") or not self.wait_ready():
+                    results.append(CandidateResult(c.name, served=False, detail="server did not become ready"))
+                    continue
+                single = self.bench_single(served, f"servingopt_{uuid.uuid4().hex}")
+                agg = self.bench_aggregate(served) if objective == "throughput" else None
+                q = self.eval_quality(family, variant) if eval_each else None
+                if c.name == "baseline" and source_quality is None:
+                    source_quality = q
+                qok = (valid_quality(q) and valid_quality(source_quality)
+                       and q >= source_quality - self.quality_tolerance)
+                results.append(CandidateResult(c.name, True, single_tps=single, aggregate_tps=agg,
+                                               quality_pass_rate=q, quality_ok=qok))
+            finally:
                 self.stop()
-                continue
-            single = self.bench_single(served, f"servingopt_{c.name}")
-            agg = self.bench_aggregate(served) if objective == "throughput" else None
-            q = self.eval_quality(family, variant) if eval_each else None
-            qok = (q is None) or (source_quality is None) or (q >= source_quality - self.quality_tolerance)
-            results.append(CandidateResult(c.name, True, single_tps=single, aggregate_tps=agg, quality_pass_rate=q, quality_ok=qok))
+        best = select_best(results, objective)
+        if best is not None:
+            self.best_env = next(c.env for c in cands if c.name == best.name)
+            try:
+                if self.launch(family, variant, self.best_env).get("ok") and self.wait_ready():
+                    return results, best
+            except Exception:
+                self.stop()
+                raise
             self.stop()
-        return results, select_best(results, objective)
+        return results, None
+
+
+def valid_quality(value: object) -> TypeGuard[float]:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 < value <= 1
+
+
+def stop_owned_container(name: str) -> None:
+    import json
+    import subprocess
+
+    if not re.fullmatch(r"forgewright-[0-9a-f]{32}", name):
+        raise ValueError("Invalid owned container name")
+    inspection = subprocess.run(["docker", "inspect", name], capture_output=True, text=True)
+    if inspection.returncode != 0:
+        if "No such" in inspection.stderr:
+            return
+        raise RuntimeError("Could not inspect owned server container")
+    container = json.loads(inspection.stdout)[0]
+    if (container.get("Config", {}).get("Labels") or {}).get("forgewright.owner") != name:
+        raise RuntimeError("Container ownership does not match; refusing to stop it")
+    result = subprocess.run(["docker", "rm", "-f", container["Id"]], capture_output=True)
+    if result.returncode != 0:
+        raise RuntimeError("Could not stop owned server container")
 
 
 def _scores_csv_metric(path: Path, bucket: str, metric: str) -> Optional[float]:
@@ -327,5 +385,5 @@ class ServingOptTool(Tool):
             for r in results
         ]
         tail = f"best for {objective}: {best.name}" if best else "no quality-preserving candidate beat baseline"
-        return ToolResult(True, "serving-opt sweep:\n" + "\n".join(lines) + "\n" + tail,
+        return ToolResult(best is not None, "serving-opt sweep:\n" + "\n".join(lines) + "\n" + tail,
                           {"best": best.name if best else None, "objective": objective})

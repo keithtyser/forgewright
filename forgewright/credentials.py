@@ -47,13 +47,40 @@ def load_credentials() -> dict:
 
 def save_credentials(data: dict) -> Path:
     p = credentials_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    try:
-        os.chmod(p, 0o600)
-    except OSError:
-        pass  # best-effort on platforms without POSIX perms
+    secure_write_json(p, data)
     return p
+
+
+def secure_write_json(p: Path, data: dict) -> None:
+    """Restrict an empty temporary file before writing secrets, then replace atomically."""
+    import tempfile
+    import subprocess
+    import re
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=".secret-", dir=p.parent)
+    temporary = Path(name)
+    try:
+        if os.name == "nt":
+            identity = subprocess.run(["whoami", "/user", "/fo", "csv", "/nh"],
+                                      capture_output=True, text=True, check=True)
+            sid = re.search(r"S-1-\d+(?:-\d+)+", identity.stdout)
+            if sid is None:
+                raise OSError("Cannot determine the current user's Windows SID")
+            subprocess.run(["icacls", str(temporary), "/inheritance:r", "/grant:r", f"*{sid.group()}:(F)"],
+                           capture_output=True, check=True)
+        else:
+            os.chmod(temporary, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            json.dump(data, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, p)
+    finally:
+        if fd != -1:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
 
 
 def apply_credentials() -> Optional[str]:

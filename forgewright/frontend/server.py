@@ -51,8 +51,11 @@ class BackendServer:
     def run_turn(self, text: str, *, ask_fn: Optional[Callable[[Any, dict], Any]] = None) -> None:
         self.permissions.ask_fn = ask_fn   # rebind this turn's approver onto the session policy
         try:
-            self.handle_turn(text, self.reporter, self.permissions)
-            self.emit({"type": "done", "ok": True})
+            result = self.handle_turn(text, self.reporter, self.permissions)
+            event = {"type": "done", "ok": getattr(result, "done", True)}
+            if result is not None:
+                event["reason"] = getattr(result, "final", "")
+            self.emit(event)
         except Exception as e:  # noqa: BLE001 - report the failure, keep the session alive
             self.emit({"type": "done", "ok": False, "error": str(e)})
 
@@ -70,11 +73,15 @@ class BackendServer:
 
 def route(msg: dict, msg_q: "queue.Queue", approval_q: "queue.Queue") -> None:
     """Send a parsed client message to the turn queue or the approval queue."""
+    if not isinstance(msg, dict):
+        return
     t = msg.get("type")
     if t == "approval_response":
         approval_q.put(msg)
     elif t in ("user_msg", "command", "shutdown"):
         msg_q.put(None if t == "shutdown" else msg)
+        if t == "shutdown":
+            approval_q.put(None)
 
 
 def _make_recorder(record_path):
@@ -94,8 +101,9 @@ def _make_recorder(record_path):
         return (lambda direction, obj: None), (lambda: None)
 
     def record(direction: str, obj) -> None:
+        from forgewright.redaction import redact
         try:
-            fh.write(json.dumps({"t": time.time(), "dir": direction, "event": obj}, default=str) + "\n")
+            fh.write(json.dumps({"t": time.time(), "dir": direction, "event": redact(obj)}, default=str) + "\n")
             fh.flush()
         except Exception:  # noqa: BLE001 - recording is best-effort
             pass
@@ -137,6 +145,7 @@ def serve_stdio(
     server = BackendServer(handle_turn, emit, handle_command=handle_command)
     msg_q: "queue.Queue" = queue.Queue()
     approval_q: "queue.Queue" = queue.Queue()
+    closed = threading.Event()
 
     def reader() -> None:
         for line in instream:
@@ -148,12 +157,26 @@ def serve_stdio(
             except json.JSONDecodeError:
                 continue
             record("in", msg)
+            if not isinstance(msg, dict):
+                continue
             if msg.get("type") == "interrupt":
                 if interrupt_event is not None:
                     interrupt_event.set()   # out-of-band: stop the running turn between steps
+                approval_q.put(None)
                 continue
             route(msg, msg_q, approval_q)
         msg_q.put(None)  # stream closed -> end the session
+        closed.set()
+        approval_q.put(None)
+
+    def approval_response():
+        while True:
+            if closed.is_set() and approval_q.empty():
+                return None
+            try:
+                return approval_q.get(timeout=0.1)
+            except queue.Empty:
+                continue
 
     threading.Thread(target=reader, daemon=True).start()
     emit({"type": "ready"})
@@ -164,7 +187,7 @@ def serve_stdio(
         if msg.get("type") == "command":
             server.run_command(msg)
             continue
-        approver = StreamApprover(emit, approval_q.get)
+        approver = StreamApprover(emit, approval_response)
         server.run_turn(str(msg.get("text", "")), ask_fn=approver)
     emit({"type": "bye"})
     close_record()

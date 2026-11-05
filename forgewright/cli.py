@@ -63,7 +63,7 @@ def _resolve_provider(brain: Optional[str], settings: Settings):
 
     saved_brain = apply_credentials()  # populate env from ~/.forgewright/credentials.json
     if brain:
-        return parse_brain_arg(brain)
+        return settings.provider(brain) if brain in settings.providers else parse_brain_arg(brain)
     if saved_brain:
         return parse_brain_arg(saved_brain)
     if _os.environ.get("OPENROUTER_API_KEY"):
@@ -76,7 +76,13 @@ def _bind_swarm(agent, reporter, permissions) -> None:
     Director swarm it dispatches streams into the one chat and its approvals surface here."""
     tool = agent.tools.get("run_recipe")
     if tool is not None and hasattr(tool, "bind"):
-        tool.bind(reporter=reporter, permissions=permissions)
+        tool.bind(reporter=reporter, permissions=permissions,
+                  ledger=agent.ledger, interrupt=agent.interrupt)
+
+
+def _validate_targets(targets) -> None:
+    if len(targets) != 1 or targets[0].kind != "local":
+        raise typer.BadParameter("Recipes currently require one local target. Run Forgewright on the GPU host.")
 
 
 def build_registry(brain=None) -> ToolRegistry:
@@ -119,7 +125,7 @@ def run(
         None, "--hardware", help="Targets: 'local,ssh://user@host/workdir'."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions (unattended)."),
-    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps (0 = run until the goal is met)."),
+    max_steps: Optional[int] = typer.Option(None, "--max-steps", help="Max agent steps (config default; 0 = unlimited)."),
     resume: Optional[str] = typer.Option(None, "--resume", help="Resume a prior run by its run_id (from its checkpoint)."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
 ) -> None:
@@ -127,6 +133,7 @@ def run(
     settings = Settings.load(config)
     provider = _resolve_provider(brain, settings)
     targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
+    _validate_targets(targets)
 
     def ask(tool, args) -> bool:  # console approver for destructive ops
         return typer.confirm(f"Allow {tool.name} ({tool.risk})? args={args}")
@@ -149,7 +156,8 @@ def run(
         permissions=policy,
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
-        max_steps=max_steps,
+        max_steps=settings.governor.max_steps if max_steps is None else max_steps,
+        max_wall_clock_hours=settings.governor.max_wall_clock_hours,
         checkpoint=checkpoint,
         resume=bool(resume),
     )
@@ -194,13 +202,14 @@ def interactive(
     brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
     hardware: Optional[str] = typer.Option(None, "--hardware", help="Targets: 'local,ssh://user@host/workdir'."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve destructive actions."),
-    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps per message (0 = until the goal is met)."),
+    max_steps: Optional[int] = typer.Option(None, "--max-steps", help="Max agent steps per message (config default; 0 = unlimited)."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
 ) -> None:
     """Interactive Forgewright session (the default). Chat with the agent across turns."""
     settings = Settings.load(config)
     provider = _resolve_provider(brain, settings)
     targets = parse_hardware_arg(hardware) if hardware else [settings.hardware["local"]]
+    _validate_targets(targets)
 
     def ask(tool, args) -> str:
         choice = typer.prompt(
@@ -218,7 +227,9 @@ def interactive(
         permissions=policy,
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
-        max_steps=max_steps,
+        max_steps=settings.governor.max_steps if max_steps is None else max_steps,
+        max_wall_clock_hours=settings.governor.max_wall_clock_hours,
+        checkpoint=Checkpoint(run_id),
         reporter=_live_reporter(console),
     )
     _bind_swarm(agent, agent.reporter, policy)   # let chat dispatch the swarm into this transcript
@@ -260,7 +271,7 @@ def interactive(
 def serve(
     brain: Optional[str] = typer.Option(None, "--brain", help="Brain shorthand or provider name."),
     config: Optional[Path] = typer.Option(None, "--config", help="providers.yaml path."),
-    max_steps: int = typer.Option(0, "--max-steps", help="Max agent steps per turn (0 = until the goal is met)."),
+    max_steps: Optional[int] = typer.Option(None, "--max-steps", help="Max agent steps per turn (config default; 0 = unlimited)."),
 ) -> None:
     """Backend serve loop over stdin/stdout newline-JSON (what the terminal-kit TUI spawns).
 
@@ -282,17 +293,19 @@ def serve(
         permissions=PermissionPolicy(),
         ledger=ledger,
         context=ContextManager(SYSTEM_PROMPT),
-        max_steps=max_steps,
+        max_steps=settings.governor.max_steps if max_steps is None else max_steps,
+        max_wall_clock_hours=settings.governor.max_wall_clock_hours,
+        checkpoint=Checkpoint(run_id),
         interrupt=interrupt_ev.is_set,
     )
 
-    def handle_turn(text: str, reporter, permissions) -> None:
+    def handle_turn(text: str, reporter, permissions):
         # reuse the one agent (persistent context); bind this turn's reporter + approver
         interrupt_ev.clear()   # a fresh turn starts uninterrupted
         agent.reporter = reporter
         agent.permissions = permissions
         _bind_swarm(agent, reporter, permissions)   # swarm streams into this turn's transcript
-        agent.run(text)
+        return agent.run(text)
 
     def handle_command(name: str, args: dict, reporter, emit) -> None:
         if name == "graph":

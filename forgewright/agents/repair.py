@@ -72,7 +72,8 @@ def finetune_repair(attempt: int, artifact: Artifact, run_kwargs: dict, memory=N
     kw = dict(run_kwargs)
     fam = _family(artifact, run_kwargs)
     if memory is not None:
-        best = memory.best_params(stage="SFTTrainer", family=fam)
+        stage = "RLTrainer" if artifact.meta.get("method") == "grpo" else "SFTTrainer"
+        best = memory.best_params(stage=stage, family=fam)
         if best and "max_steps" in best and attempt == 2:
             kw["max_steps"] = best["max_steps"]
             return kw

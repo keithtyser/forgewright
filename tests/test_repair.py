@@ -172,9 +172,9 @@ def test_director_repairs_until_gate_passes(tmp_path):
     assert res.ok is True
     repairs = [d for k, d in events if k == "repair"]
     assert len(repairs) == 2 and "strength" in repairs[0]["changes"]
-    # every attempt got recorded to the learning loop (2 fails + 1 pass)
+    # The output exists, but quality remains pending until evaluation.
     rows = mem.recall(stage="Abliterator", family="q08")
-    assert len(rows) == 3 and rows[0]["passed"] is True
+    assert len(rows) == 3 and rows[0]["passed"] is None
 
 
 def test_director_halts_when_repair_exhausted(tmp_path):

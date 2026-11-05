@@ -4,6 +4,7 @@
 // text is caret-escaped). The classic scrolling UI stays the default until this is proven; this
 // is opt-in via FORGEWRIGHT_FULLSCREEN=1 (or --fullscreen).
 'use strict';
+const { sanitize } = require('./lib/sanitize');
 const { spawn } = require('child_process');
 const readline = require('readline');
 const { formatEvent, roleColor } = require('./lib/render');
@@ -142,7 +143,7 @@ function run(brainArg) {
     return ui.hudRows(state, spin).map((r) => ui.paintRowMk(r.segs, theme, escMarkup, W)).join('\n');
   }
   function drawHud() { try { hud.setContent(busy ? hudContent() : '', true); } catch (e) {} }
-  function startTimer() { if (!timer) timer = setInterval(() => { state.i++; if (busy) drawHud(); }, 120); }
+  function startTimer() { if (!timer) timer = setInterval(() => { state.i++; if (busy) drawHud(); }, process.env.FORGEWRIGHT_REDUCED_MOTION ? 1000 : 120); }
   function resetTurn() {
     state.start = Date.now(); state.i = 0; state.tokens = 0; state.actions = 0;
     state.pipeline = null; state.metric = null; state.activeRole = null; state.lastAction = '';
@@ -167,7 +168,7 @@ function run(brainArg) {
 
   function onLine(line) {
     line = line.trim(); if (!line) return;
-    let obj; try { obj = JSON.parse(line); } catch (e) { return; }
+    let obj; try { obj = sanitize(JSON.parse(line)); } catch (e) { return; }
     if (obj.type === 'approval_request') { showApproval(obj); return; }
     if (obj.type === 'done') busy = false;
     updateHudState(obj);
@@ -187,7 +188,7 @@ function run(brainArg) {
     switch (obj.type) {
       case 'assistant':
         if (obj.role && obj.role !== 'agent') state.activeRole = obj.role;
-        if (obj.usage && obj.usage.total_tokens) state.tokens = obj.usage.total_tokens;
+        if (obj.usage && obj.usage.total_tokens) state.tokens += obj.usage.total_tokens;
         break;
       case 'tool':
         if (obj.role && obj.role !== 'agent') state.activeRole = obj.role;
@@ -199,7 +200,7 @@ function run(brainArg) {
         state.activeRole = 'Director'; break;
       case 'stage':
         if (state.pipeline && state.pipeline[obj.index]) state.pipeline[obj.index].state = obj.state;
-        if (obj.state === 'active') { state.activeRole = obj.name; state.metric = null; state.stageStart = Date.now(); }
+        if (obj.state === 'active' || obj.state === 'retry') { state.activeRole = obj.name; state.metric = null; state.stageStart = Date.now(); }
         else if (state.stageStart && (obj.state === 'done' || obj.state === 'failed')) {
           obj.dur = ui.fmtDur(Date.now() - state.stageStart);   // shown by formatEvent
         }
@@ -316,7 +317,7 @@ function run(brainArg) {
   function showApproval(obj) {
     awaitingApproval = true;
     note('^Y^+⚠ approval needed: ^:^Y' + escMarkup(obj.tool || 'command') + (obj.risk ? ' (' + escMarkup(obj.risk) + ')' : '') + '^:');
-    if (obj.args && Object.keys(obj.args).length) note('^K  ' + escMarkup(JSON.stringify(obj.args).slice(0, 200)) + '^:');
+    if (obj.args && Object.keys(obj.args).length) note('^K  ' + escMarkup(JSON.stringify(obj.args, null, 2)) + '^:');
     const items = [
       { content: 'approve once', value: 'yes' },
       { content: 'approve all ' + (obj.tool || ''), value: 'all' },
@@ -330,7 +331,7 @@ function run(brainArg) {
     document.giveFocusTo(menu);
     menu.on('submit', (value) => {
       try { menu.destroy(); } catch (e) {}
-      send({ type: 'approval_response', decision: menuValue(value) || 'no' });
+      send({ type: 'approval_response', request_id: obj.request_id, decision: menuValue(value) || 'no' });
       awaitingApproval = false;
       try { document.giveFocusTo(input); } catch (e) {}
     });

@@ -1,214 +1,91 @@
 # Forgewright
 
-> A multi-agent swarm for **autonomous LLM post-training**, behind one conversational CLI.
+Forgewright plans and runs LLM post-training recipes through a conversational CLI. Python handles the agent loop, approvals, job records, and artifacts. A Node terminal UI displays progress. [model-forge](https://github.com/keithtyser/model-forge) runs the model operations.
 
-Point it at a model and a goal, give it GPUs (local or over SSH), and it plans and runs the
-whole pipeline: data curation, fine-tuning, abliteration, quantization, serving optimization,
-eval, and publishing. The swarm is invisible: you chat, watch progress stream in, and approve
-outward actions at a single prompt, like a coding agent.
+This is an experimental project. The control plane has CPU tests on Windows and Linux. GPU recipes need a configured Linux host, model snapshots, and compatible containers. Remote recipes currently stop before launch because their file and execution paths are not yet consistent. Run the application on the GPU host instead.
+
+## Install
+
+Use Python 3.11–3.13 and Node 24. From a checkout:
 
 ```bash
-forgewright "Curate a reasoning dataset, fine-tune Qwen3.5-0.8B on it,
-  NVFP4-quantize for my GB10, optimize tok/s without losing quality, eval, and publish"
+python -m venv .venv
+# Activate the environment, then:
+python -m pip install --require-hashes -r requirements-dev.lock
+python -m pip install --no-deps -e .
+cd frontend
+npm ci --ignore-scripts
+npm install -g .
 ```
 
-## The swarm
+Python owns `forgewright`. The UI uses `forgewright-tui`, so the installations do not replace each other's commands. If the UI selects the wrong interpreter, set `FORGEWRIGHT_PYTHON` to the environment's Python executable.
 
-Post-training is a chain of typed handoffs, not one blob:
+Installing the control plane does not prepare model-forge or GPU dependencies. Set `FORGE_REPO` to a separate checkout at commit `324a5b487d578c1da837719bae3d1399eeb9f55b`. Prepare that checkout and its containers on the GPU host. The optional `local-train` package extra does not replace this setup.
 
+## Run
+
+```bash
+forgewright-tui
+python -m forgewright run "Inspect my local model and propose a quantization plan" --max-steps 20
 ```
-goal -> dataset -> adapter -> (abliterated) model -> quantized model
-     -> tuned serving config -> eval report -> published repo
-```
 
-Each stage is its own specialist agent with a focused prompt, a small tool set, and one
-gate it is responsible for. A **Director** plans the recipe, dispatches specialists,
-passes each produced artifact to the next, enforces the global gate (a regression never
-flows downstream), and surfaces everything in one transcript.
+Set `--brain` to a provider name from `providers.yaml` or a shorthand such as `vllm:model@http://localhost:8000/v1`. Copy [the example config](configs/providers.example.yaml) to `$FORGEWRIGHT_HOME/providers.yaml` to define providers.
 
-| Specialist | consumes -> produces |
+The experimental Codex adapter reads `$CODEX_HOME/auth.json`, falling back to `~/.codex/auth.json`. Log in with the official CLI first. See [SECURITY.md](SECURITY.md) for the direct OAuth adapter's limits.
+
+Shell, job, system, and publishing tools ask for approval by default. “All” remembers the same tool and arguments for the session. `--yes` and the UI's YOLO choice bypass approval. They do not create a sandbox or limit spending.
+
+## Recipes and checks
+
+| Recipe | Stages |
 |---|---|
-| DataCurator | goal -> dataset (curate seeds, or teacher-distillation) |
-| SFTTrainer | dataset -> adapter (uplift / distillation SFT) |
-| RLTrainer | task spec -> adapter (GRPO / RLVR, KL-anchored) |
-| Abliterator | model -> model (refusal-direction ablation) |
-| Quantizer | model -> model (NVFP4 / FP8) |
-| ServingOptimizer | model -> tuned serving config |
-| Evaluator | adapter / model -> eval report (the gate authority) |
-| Publisher | any -> published HF repo (human-gated) |
+| `uplift` | Curate → SFT → evaluate adapter |
+| `task_grpo` | Train on verifiable tasks → evaluate adapter |
+| `quantize_serve` | Quantize → evaluate model → tune serving |
+| `abliterate` | Edit refusal directions → evaluate model |
+| `uplift_publish` | Curate → SFT → evaluate → merge → evaluate → approved publication |
+| `full` | Curate → SFT → evaluate → merge → evaluate → quantize → evaluate → tune serving → evaluate endpoint |
 
-Specialists never call each other directly. A producer registers a typed `Artifact` (a
-handle to the bytes plus provenance and its gate result); the consumer pulls it from the
-**registry**, which doubles as the provenance graph (`register / get / latest / lineage`).
+`full` adds abliteration only with `include_abliteration=true`. Quantization requires an explicit method or an inspected capability list. A method request alone is an explicit choice, not hardware validation.
 
-The Director runs named **recipes** (chains over the roster, e.g. `uplift`, `task_grpo`,
-`quantize_serve`, `uplift_publish`, `abliterate`). When a stage's gate fails, the Director
-first runs a bounded **generate → verify → repair** loop (back off the failing knob and retry
-a few times, seeding the retry from a config that passed before); only if repair is exhausted
-does it halt and run **saga compensations** in reverse, so a regression never flows downstream
-and side effects (like a live served endpoint) get torn down. Every gated outcome is written to
-an **outcome memory** that grounds future planning and the repair policies (the swarm learns
-across runs).
+Each transform returns an artifact with its source and gate result. Evaluation is a separate step. Missing baseline scores, failed evaluation jobs, stale files, or invalid results fail the gate. Serving optimization measures its baseline configuration, checks candidate quality, and restarts the winner. Publication supports standalone models and requires evaluation of that artifact, approval, and a completed upload receipt.
 
-From the chat, the conversational agent dispatches the swarm through the `run_recipe` tool:
-you state a goal, the agent picks the recipe + params and hands it to the Director, and the
-specialist progress plus any approval surface in the one transcript.
+Adapter evaluation supports numeric `{prompt, answer}` JSONL tasks, with at least 32 evaluation examples. It does not measure general chat quality. Model evaluation uses model-forge's internal capability suite. A validation set used to guide repair is no longer an untouched final test; reserve a separate final test for release claims.
 
-## Capabilities
+Custom holdout prompts are excluded during curation and checked before training. Training records data hashes. Licenses default to `unknown`; verify the actual source rights before publication. Distillation requires an explicit provider. Template output is simulation and cannot enter training.
 
-- **Quantize**: the method follows the GPU (NVFP4 on Blackwell, FP8 on Hopper/Ada, INT8/AWQ on
-  Ampere, via NVIDIA ModelOpt), with a speedup-based gate (no static floor).
-- **Fine-tune**: uplift distillation SFT (assistant-only loss, conservative LR, strict
-  `<think>` and holdout hygiene) and task-mode GRPO/RLVR with the user's RL scars baked in
-  (KL anchor, PPO clip, DAPO overlong masking).
-- **Abliterate**: contrastive refusal-direction projection with a dual gate (refusal must
-  drop and capability must hold).
-- **Serving-opt**: latency or throughput objective, speculative decoding plus batching,
-  quality-gated against the source.
-- **Eval-gate**: held-out verifiable scoring with a robust adapter loader that fails loud
-  if an adapter does not actually apply.
+## Execution limits
 
-## Architecture
+The agent step limit follows config (80 by default). `--max-steps 0` explicitly removes that limit. Wall time is checked between agent calls and does not stop detached GPU jobs. Legacy dollar and GPU-hour settings now raise an error because they were never enforced. Set those limits at the provider or host scheduler.
 
-A light, cross-platform shared runtime (agent loop, [LiteLLM](https://github.com/BerriAI/litellm)
-brain, tools, SSH, job manager, ledger, permissions) plus the swarm layer
-(`contracts`, `registry`, `agents`, the Director). It calls
-[`model-forge`](https://github.com/keithtyser/model-forge) for the mature ML-ops
-primitives and runs heavy GPU stages inside model-forge's posttrain container.
+Generated training and adapter-evaluation commands use `FORGE_REPO`, `MODEL_FORGE_POSTTRAIN_IMAGE`, `MODEL_FORGE_MODELS_DIR`, `MODEL_FORGE_HF_HOME`, and `MODEL_FORGE_GPUS`. Container defaults remain development defaults. Pin an image digest and inspect device allocation before a real run. Quantization and serving use separate upstream launchers; a training device setting is not proof of isolation for those stages.
 
-**Generalize, don't assume.** The agent derives its strategy from two ground truths rather than
-hardcoding Blackwell/qwen: `gpu_inspect` + model-forge's `forge model describe` classify the GPU
-(arch, compute capability, supported quant) and the model (architecture, depth, module naming,
-MoE-ness, chat template). `derive_plan` fuses them into the run plan — precision, quant method,
-abliteration/LoRA target modules, family config, and a VRAM feasibility note — *before* any GPU
-job. So you point it at any model and any NVIDIA GPU (Ampere/Ada/Hopper/Blackwell) and it figures
-out the rest; on non-Blackwell it sets the quant method and posttrain container accordingly.
+Serving cleanup checks the ownership label and uses the immutable Docker ID. An occupied port causes an error. This integration uses model-forge's Spark naming and label hooks; validate a different launcher before using it.
 
-### Frontend
+Job waits support interruption and attempt cancellation on timeout. SSH tools require a known host key. Check jobs and containers after a timeout or lost connection: an unreachable host or independent container may continue working.
 
-One conversational CLI. The default rich UI is a [terminal-kit](https://www.terminal-kit.com/)
-Node TUI (see Credits) talking to the Python backend over a newline-delimited JSON event
-stream, so the swarm stays entirely on the backend. A built-in Python REPL is the headless
-fallback and is used in tests.
+## Recovery and records
 
-## Install and run
+Records live under `$FORGEWRIGHT_HOME` (default `~/.forgewright`):
 
-```bash
-# 1. Python backend (on the GPU box, in a venv):
-pip install -e .
+- `ledger/` holds agent events and recipe receipts; `checkpoints/` holds conversation state.
+- `registry/artifacts.jsonl` holds immutable artifact records and parent IDs. `runs/jobs/` holds job commands, logs, and exit status.
+- `transcripts/` holds UI events and user messages. Common secrets and known environment credentials are redacted; inspect files before sharing them.
 
-# 2. The `forgewright` command (the Node TUI):
-cd frontend && npm install && npm install -g .   # use a user npm prefix if global is root-owned
+Resume with `forgewright run --resume RUN_ID "goal"`. A recipe receipt marked `active`, `failed`, or `interrupted` blocks automatic replay. Inspect the stage, jobs, outputs, and containers before choosing a fresh run. Do not delete the receipt merely to bypass the check. Automatic reconciliation of unfinished jobs remains future work.
 
-# 3. Launch the chat:
-forgewright
-```
+## Terminal controls
 
-On first launch `forgewright` runs a short setup wizard: pick **OpenRouter** (paste an API
-key) or **Codex** (ChatGPT login), and the choice is saved to
-`~/.forgewright/credentials.json` so you are never asked again. It then starts the
-conversational TUI and spawns the Python backend (`python -m forgewright serve`) behind it.
-If the backend venv is not your default `python3`, point the TUI at it:
-`export FORGEWRIGHT_PYTHON=/path/to/venv/bin/python`.
+Use `/graph`, `/models`, `/brain`, `/login`, `/help`, and `/quit`. Messages sent during a turn queue for the next turn. Ctrl-C requests an interrupt; it cannot cancel every external operation immediately.
 
-In-chat slash commands:
+Set `NO_COLOR=1` for plain color output, `FORGEWRIGHT_REDUCED_MOTION=1` for slower animation, or `FORGEWRIGHT_PLAIN=1` for compact status. Full-screen mode is optional with `--fullscreen`. Approval messages show full arguments and use request IDs.
 
-| command | what it does |
-|---|---|
-| `/graph` | draw the session's provenance DAG (dataset → adapter → model → eval), each node colored by its producer with its gate score |
-| `/models` | list the models the current brain can reach (Codex probes the live token; falls back to a curated list) |
-| `/login` | reconfigure or refresh your brain (new OpenRouter key / re-run Codex login); restarts the backend with the new credentials |
-| `/brain` | show the brain currently in use |
-| `/help` | list commands |
-| `/quit` | exit (or Ctrl-C) |
+## Development and releases
 
-The input box never disappears: you can **type to the agent while it works** (a message sent
-mid-run is queued and picked up after the current turn). **Ctrl-C once interrupts** the running
-turn (cooperatively, between steps); **Ctrl-C twice** quits the TUI.
-
-Approvals use a vertical menu: **up/down to choose, enter to confirm** (approve once / approve
-all of this tool / YOLO bypass-all / deny).
-
-The agent can also **configure your environment** to unblock work -- install or upgrade
-packages, drivers, and dependencies (pip/uv/conda/apt, CUDA, docker) via the `configure_env`
-tool. These are system-modifying, so they carry a `system` risk tier and are approval-gated:
-you see the exact command and where it runs (local / a host / the container) before anything
-changes. The agent prefers the least-invasive scoped change and retries the blocked step after
-a fix, rather than giving up.
-
-### Brains
-
-You can also pick a brain explicitly with `--brain` (this overrides the saved setup). Any
-LiteLLM-supported backend works, plus a Codex (ChatGPT login) tap:
-
-```bash
-forgewright --brain openrouter:deepseek/deepseek-v4-pro   # hosted, key in OPENROUTER_API_KEY
-forgewright --brain anthropic:claude-opus-4-8             # key in ANTHROPIC_API_KEY
-forgewright --brain openai:gpt-5.1                        # key in OPENAI_API_KEY
-forgewright --brain vllm:qwen3.5-coder-30b@http://host:8000/v1   # local / self-hosted
-forgewright --brain oauth-codex:gpt-5.5-codex             # ChatGPT-login Codex, explicit model
-```
-
-`oauth-codex` reuses the credentials the official Codex CLI writes to `~/.codex/auth.json`,
-so run `codex login` (ChatGPT account) once first. Forgewright refreshes the access token
-automatically and talks to OpenAI's Codex Responses API. When you pick Codex in the setup
-wizard it offers a model menu (gpt-5.5-codex, gpt-5.5, gpt-5.1-codex-max, gpt-5.1-codex,
-gpt-5.1, gpt-5-codex, gpt-5, gpt-5-mini) plus a free-text entry for any newer id; or pass
-`--brain oauth-codex:<model>` directly. The Claude subscription tap is intentionally not
-supported (use an `anthropic:` API key instead).
-
-Backend-only (no Node UI):
-
-```bash
-forgewright            # python entry: built-in REPL (also: `python -m forgewright`)
-forgewright "<goal>" --yes    # one-shot, unattended
-python -m forgewright serve   # the newline-JSON event server the TUI spawns
-```
-
-Heavy training, quantization, and abliteration run inside model-forge's GPU container on a
-Linux Blackwell box; Forgewright orchestrates them locally or over SSH.
-
-## Live HUD
-
-While the swarm works, a panel hovers above the prompt showing the pipeline (each
-specialist's stage state), the active specialist, training step/loss/reward with sparklines,
-elapsed, and tokens. Training telemetry is structured: the backend taps trainer output into
-typed `metric` events the HUD consumes directly. Produced artifacts stream into the transcript
-as lineage badges (`◇ eval#def456 ← adapter#xyz789  score 0.94 ✓`), and `/graph` draws the
-full session provenance DAG. Each stage and turn shows its duration, and a turn ends with a
-compact summary (`done · 42s · 7 actions · ↑3.1k tok`). Set `FORGEWRIGHT_PLAIN=1` for a minimal
-one-line status instead.
-
-Colors come from one shared theme used by both the scrolling and full-screen front-ends, so they
-never drift. Pick a theme with `FORGEWRIGHT_THEME=dark|light|mono` (`NO_COLOR` forces `mono` for
-piping/accessibility). The full-screen layout (status bar, scrollable transcript, live HUD strip,
-in-app menus) is opt-in via `FORGEWRIGHT_FULLSCREEN=1`.
-
-By default the agent runs until the goal is met (no step-budget hard stop); a repetition
-guard plus a **velocity circuit breaker** still break true dead loops. The breaker trips only
-on *no progress per unit cost*: a window of steps/tokens with no successful tool result, so a
-long healthy run never trips while a silent spin is stopped. Tune or disable it with
-`FORGEWRIGHT_BREAKER_IDLE_STEPS` / `_IDLE_TOKENS` / `_IDLE_SECONDS` (0 = off), or set
-`--max-steps N` for a hard bound. A run also **checkpoints** its working state each step, so a
-crashed or stopped autonomous run resumes with `forgewright run --resume <run_id> "<goal>"`.
-
-## Traces
-
-Every session is recorded two ways under `$FORGEWRIGHT_HOME` (default `~/.forgewright`):
-
-- `ledger/<run_id>.jsonl` — the agent-loop view (goal, each assistant turn + tool calls/
-  results, token usage), written by the loop.
-- `transcripts/<run_id>.jsonl` — the complete, replayable session: a `meta` header (run id,
-  brain, ledger path), then every inbound message (your turns, approval decisions, slash
-  commands) and every outbound event (assistant text, tool calls, pipeline/stage/artifact/
-  metric, approvals), each tagged with a wall-clock time and direction (`in`/`out`).
-
-The transcript is a full agentic trajectory (goal to outcome), so it doubles as review
-material for improving the harness and as a source for distillation/RL training data later.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checks, [CHANGELOG.md](CHANGELOG.md) for changes, and [docs/maintenance.md](docs/maintenance.md) for remaining work. Mocked tests do not establish GPU correctness. Record a GPU smoke on each claimed configuration before releasing it.
 
 ## Credits
 
-- [terminal-kit](https://www.terminal-kit.com/) by Cedric Ronvel (MIT), the terminal UI
-  library used for the frontend.
-- [model-forge](https://github.com/keithtyser/model-forge), the ML-ops engine.
-- [LiteLLM](https://github.com/BerriAI/litellm), the model-agnostic brain.
+- [terminal-kit](https://www.terminal-kit.com/) by Cedric Ronvel (MIT), used by the terminal UI.
+- [model-forge](https://github.com/keithtyser/model-forge), the model operations engine.
+- [LiteLLM](https://github.com/BerriAI/litellm), the provider interface.
