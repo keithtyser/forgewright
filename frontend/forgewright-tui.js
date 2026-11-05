@@ -17,6 +17,7 @@ const path = require('path');
 const { formatEvent, roleColor, headlineMetric } = require('./lib/render');
 const { makeTheme } = require('./lib/theme');
 const ui = require('./lib/ui');
+const { sanitize } = require('./lib/sanitize');
 
 // persisted credentials + brain resolution (shared with the full-screen UI and the backend)
 const {
@@ -42,7 +43,7 @@ function renderTest() {
   rl.on('line', (line) => {
     line = line.trim();
     if (!line) return;
-    let obj; try { obj = JSON.parse(line); } catch (e) { return; }
+    let obj; try { obj = sanitize(JSON.parse(line)); } catch (e) { return; }
     for (const r of formatEvent(obj)) w('[' + r.color + '] ' + r.text + '\n');
   });
 }
@@ -108,7 +109,7 @@ function interactive(brain) {
           for (let i = 1; i < lines.length; i++) w('  ' + lines[i] + '\n');
         }
         if (obj.role && obj.role !== 'agent') hud.activeRole = obj.role;
-        if (obj.usage && obj.usage.total_tokens) hud.tokens = obj.usage.total_tokens;
+        if (obj.usage && obj.usage.total_tokens) hud.tokens += obj.usage.total_tokens;
         break;
       }
       case 'tool': {
@@ -134,7 +135,7 @@ function interactive(brain) {
       }
       case 'stage': {
         if (hud.pipeline && hud.pipeline.stages[obj.index]) hud.pipeline.stages[obj.index].state = obj.state;
-        if (obj.state === 'active') { hud.activeRole = obj.name; hud.metric = null; hud.lastAction = ''; hud.stageStart = Date.now(); }
+        if (obj.state === 'active' || obj.state === 'retry') { hud.activeRole = obj.name; hud.metric = null; hud.lastAction = ''; hud.stageStart = Date.now(); }
         const sd = (hud.stageStart && obj.state !== 'active') ? A.dim + '  ' + ui.fmtDur(Date.now() - hud.stageStart) + A.r : '';
         if (obj.state === 'done') w(A.green + '✓' + A.r + ' ' + A.dim + obj.name + ' complete' + A.r + sd + '\n');
         if (obj.state === 'failed') w(A.red + '✗' + A.r + ' ' + A.red + obj.name + ' failed' + A.r + sd + '\n');
@@ -377,7 +378,7 @@ function interactive(brain) {
   function startStatus() {
     if (!hud.start) hud.start = Date.now();
     if (hud.timer) return;
-    hud.timer = setInterval(() => { hud.i++; if (busy && !inMenu && !awaitingApproval) renderFooter(); }, 140);
+    hud.timer = setInterval(() => { hud.i++; if (busy && !inMenu && !awaitingApproval) renderFooter(); }, process.env.FORGEWRIGHT_REDUCED_MOTION ? 1000 : 140);
   }
   function stopStatus() { if (hud.timer) { clearInterval(hud.timer); hud.timer = null; } }
 
@@ -459,7 +460,7 @@ function interactive(brain) {
     awaitingApproval = true; stopStatus(); clearFooter();
     w('\n' + A.yellow + '─── approval needed ' + '─'.repeat(Math.max(0, ((term.width || 80) - 22))) + A.r + '\n');
     w('  ' + A.yellow + A.b + '⚠ ' + (obj.tool || 'command') + (obj.risk ? ' (' + obj.risk + ')' : '') + A.r + '\n');
-    if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + clip(JSON.stringify(obj.args), 200) + A.r + '\n');
+    if (obj.args && Object.keys(obj.args).length) w('  ' + A.dim + JSON.stringify(obj.args, null, 2) + A.r + '\n');
     w('  ' + A.dim + '↑/↓ to choose · enter to confirm' + A.r + '\n');
     const items = ['approve once', 'approve all ' + (obj.tool || ''), 'YOLO: bypass all permissions', 'deny'];
     const decisions = ['yes', 'all', 'yolo', 'no'];
@@ -468,7 +469,7 @@ function interactive(brain) {
       style: term.gray, selectedStyle: term.brightWhite.bgGreen,
     }, (err, resp) => {
       w('\n');
-      send({ type: 'approval_response', decision: decisions[(resp && resp.selectedIndex != null) ? resp.selectedIndex : 3] });
+      send({ type: 'approval_response', request_id: obj.request_id, decision: decisions[(resp && resp.selectedIndex != null) ? resp.selectedIndex : 3] });
       awaitingApproval = false;
       renderFooter();
       if (busy) startStatus();
@@ -477,7 +478,7 @@ function interactive(brain) {
 
   function onLine(line) {
     line = line.trim(); if (!line) return;
-    let obj; try { obj = JSON.parse(line); } catch (e) { return; }
+    let obj; try { obj = sanitize(JSON.parse(line)); } catch (e) { return; }
     if (obj.type === 'approval_request') { handleApproval(obj); return; }
     if (obj.type === 'done') busy = false;
     clearFooter();
@@ -587,7 +588,7 @@ function finishCodex(resolve, model) {
 
 function banner(term) {
   const width = (term && term.width) || 100;
-  const GRAD = ['\x1b[38;5;87m', '\x1b[38;5;81m', '\x1b[38;5;75m', '\x1b[38;5;69m', '\x1b[38;5;63m', '\x1b[38;5;33m'];
+  const GRAD = theme.mono ? [''] : ['\x1b[38;5;87m', '\x1b[38;5;81m', '\x1b[38;5;75m', '\x1b[38;5;69m', '\x1b[38;5;63m', '\x1b[38;5;33m'];
   let art = null;
   try {
     const figlet = require('figlet');
@@ -609,6 +610,16 @@ function banner(term) {
 const argv = process.argv.slice(2);
 const bi = argv.indexOf('--brain');
 const brainArg = bi >= 0 ? argv[bi + 1] : null;
+const remaining = argv.filter((arg, index) => index !== bi && !(bi >= 0 && index === bi + 1));
+if ((bi >= 0 && (!brainArg || brainArg.startsWith('--'))) ||
+    remaining.some(arg => !['--fullscreen', '--render-test', '--help'].includes(arg))) {
+  process.stderr.write('Unsupported TUI arguments. Use python -m forgewright run "goal" for command-line jobs.\n');
+  process.exit(2);
+}
+if (argv.includes('--help')) {
+  process.stdout.write('forgewright-tui [--brain provider] [--fullscreen]\nFORGEWRIGHT_REDUCED_MOTION=1 slows animation; NO_COLOR=1 disables color.\n');
+  process.exit(0);
+}
 if (argv.includes('--render-test')) {
   renderTest();
 } else if ((process.env.FORGEWRIGHT_FULLSCREEN === '1' || argv.includes('--fullscreen')) && process.stdout.isTTY) {

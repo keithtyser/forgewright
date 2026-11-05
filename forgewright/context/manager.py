@@ -154,7 +154,7 @@ class ContextManager:
     # --- compaction ------------------------------------------------------------------
     def maybe_compact(self) -> bool:
         threshold = int(self._budget * self.trigger_fraction)
-        if self._est_tokens() <= threshold or len(self._msgs) <= self.keep_recent:
+        if self._est_tokens() <= threshold:
             return False
         # 1) lightest touch: clear old tool outputs (keep the recent window's results intact)
         self._clear_old_tool_results()
@@ -168,6 +168,17 @@ class ContextManager:
         if old:
             self._summary = self._summarize(old, self._summary)
             self._msgs = tail
+        # An oversized recent window must not bypass the budget. Keep complete tool groups.
+        while self._est_tokens() > threshold and len(self._msgs) > 1:
+            count = 1
+            while count < len(self._msgs) and self._msgs[count].get("role") == "tool":
+                count += 1
+            if count == len(self._msgs):
+                break
+            self._summary = self._summarize(self._msgs[:count], self._summary)
+            self._msgs = self._msgs[count:]
+        if self._est_tokens() > threshold:
+            raise ValueError("Recent context exceeds the model budget; shorten the input or tool output")
         return True
 
     def _clear_old_tool_results(self) -> None:

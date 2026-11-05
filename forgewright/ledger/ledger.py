@@ -24,9 +24,10 @@ class Ledger:
         self.path = base / f"{run_id}.jsonl"
 
     def event(self, kind: str, **data: Any) -> None:
+        from forgewright.redaction import redact
         rec = {"ts": time.time(), "run_id": self.run_id, "kind": kind, **data}
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, default=str) + "\n")
+            f.write(json.dumps(redact(rec), default=str) + "\n")
 
     def read(self) -> list[dict]:
         if not self.path.exists():

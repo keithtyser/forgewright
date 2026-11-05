@@ -103,7 +103,7 @@ def test_director_gate_passes_evaluated_artifact_through(tmp_path):
         def tools(self): return ToolRegistry([])
         def run(self, inputs, goal="", **kw):
             seen["got_kind"] = inputs[0].kind
-            art = Artifact(kind="published", parents=[inputs[0].id])
+            art = Artifact(kind="published", parents=[inputs[0].id], gate=Gate(True))
             self.registry.register(art)
             return art
 
@@ -162,7 +162,9 @@ def test_event_reporter_serializes_to_json_lines():
 def test_stream_approver_round_trips():
     sent = []
     inbox = [{"type": "user_msg", "text": "ignore me"}, {"type": "approval_response", "approved": True}]
-    approver = StreamApprover(emit=sent.append, read_response=lambda: inbox.pop(0))
+    def receive():
+        return {**inbox.pop(0), "request_id": sent[-1]["request_id"]}
+    approver = StreamApprover(emit=sent.append, read_response=receive)
 
     class _Tool:
         name = "forge_publish"; risk = "destructive"
@@ -171,6 +173,7 @@ def test_stream_approver_round_trips():
     assert sent[0]["type"] == "approval_request" and sent[0]["tool"] == "forge_publish"
     # explicit decision passes through (e.g. "all" / "yolo")
     inbox2 = [{"type": "approval_response", "decision": "yolo"}]
-    assert StreamApprover(emit=sent.append, read_response=lambda: inbox2.pop(0))(_Tool(), {}) == "yolo"
+    assert StreamApprover(emit=sent.append, read_response=lambda: {
+        **inbox2.pop(0), "request_id": sent[-1]["request_id"]})(_Tool(), {}) == "yolo"
     # stream closed -> deny (fail safe)
     assert StreamApprover(emit=sent.append, read_response=lambda: None)(_Tool(), {}) == "no"

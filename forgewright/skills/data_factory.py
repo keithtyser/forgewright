@@ -14,13 +14,12 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
 _DEFAULT_REFERENCE = "gemma4_26b_a4b_local_ft_v1_live_teacher_smoke"
 
-_SOURCE_REGISTRY_TEMPLATE = {
+_SOURCE_REGISTRY_TEMPLATE: dict = {
     "version": "0.1.0",
     "description": "Forgewright distillation source catalog.",
 }
@@ -57,7 +56,7 @@ def derive_source_registry(*, family: str, variant: str, seed_path: str) -> dict
     reg["sources"] = {
         f"{ds_id}_seed": {
             "name": f"{ds_id}_seed", "type": "local_jsonl", "path": seed_path,
-            "license": "CC-BY-4.0", "quality_tier": "human_seed",
+            "license": "unknown", "quality_tier": "human_seed",
             "roles": ["capability_sft", "teacher_distillation"], "messages_field": "messages",
         }
     }

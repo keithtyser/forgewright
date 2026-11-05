@@ -42,7 +42,7 @@ class SSHTool(Tool):
             port = int(p)
         client = paramiko.SSHClient()
         client.load_system_host_keys()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
         client.connect(
             hostname=h,
             port=port,
@@ -58,8 +58,12 @@ class SSHTool(Tool):
         try:
             client = self._client(host)
             _stdin, stdout, stderr = client.exec_command(command, timeout=timeout)
-            out = stdout.read().decode("utf-8", "replace")
-            err = stderr.read().decode("utf-8", "replace")
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                out_future = pool.submit(stdout.read)
+                err_future = pool.submit(stderr.read)
+                out = out_future.result().decode("utf-8", "replace")
+                err = err_future.result().decode("utf-8", "replace")
             code = stdout.channel.recv_exit_status()
             body = (out + err).strip()
             return ToolResult(
@@ -68,5 +72,7 @@ class SSHTool(Tool):
                 meta={"exit_code": code, "host": host},
             ).truncate()
         except Exception as e:  # noqa: BLE001
-            self._clients.pop(host, None)  # drop a possibly-broken connection
+            client = self._clients.pop(host, None)
+            if client is not None:
+                client.close()
             return ToolResult(False, f"ssh error on {host}: {e}", {"error": True, "host": host})

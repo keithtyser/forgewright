@@ -31,9 +31,9 @@ const MK = {
 };
 
 function resolveThemeName(explicit) {
+  if (process.env.NO_COLOR != null && process.env.NO_COLOR !== '') return 'mono';
   const name = (explicit || process.env.FORGEWRIGHT_THEME || '').toLowerCase();
   if (name === 'dark' || name === 'light' || name === 'mono') return name;
-  if (process.env.NO_COLOR != null && process.env.NO_COLOR !== '') return 'mono';
   return 'dark';
 }
 

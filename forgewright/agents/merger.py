@@ -8,6 +8,7 @@ provenance: it only claims success if THIS run wrote fresh weights into a unique
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Optional, Sequence
 
 from forgewright.agents.base import Specialist
@@ -56,7 +57,8 @@ class Merger(Specialist):
         if not base:
             raise ValueError("Merger needs the adapter's base model (adapter.meta['base'])")
         stem = base.rstrip("/").split("/")[-1]
-        out = f"~/models/{stem}-merged-{time.strftime('%Y%m%d-%H%M%S')}"   # unique -> no stale reuse
+        variant = f"merged_{uuid.uuid4().hex[:12]}"
+        out = f"~/models/{stem}-{variant}"
         self._emit("assistant", content=f"merge adapter {adapter.id} into {base}")
         cmd = (f"{_MERGE} --base-model {base} --adapter {adapter.uri} --output-dir {out} "
                "--trust-remote-code --overwrite")
@@ -70,7 +72,7 @@ class Merger(Specialist):
             run_id=(self.ledger.run_id if self.ledger else ""),
             gate=Gate(passed=ok, metrics={"exit_code": (final or {}).get("exit_code")},
                       verdict="MERGED" if ok else "FAIL: merge did not write fresh weights"),
-            meta={"role": "merged", "family": family, "base": base},
+            meta={"role": "merged", "family": family, "base": base, "variant": variant},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok, output=f"merged ModelArtifact {art.id}")

@@ -27,10 +27,13 @@ from typing import Optional
 
 def extract_final_number(text: str) -> Optional[str]:
     """The model's final numeric answer: prefer \\boxed{..}, else the last number."""
-    boxed = re.findall(r"\\boxed\{\s*(-?\d+(?:\.\d+)?)\s*\}", text)
+    number = r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+    value = rf"{number}(?:\s*/\s*{number})?"
+    text = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"\1/\2", str(text)).replace(",", "")
+    boxed = re.findall(r"\\boxed\{\s*(" + value + r")\s*\}", text)
     if boxed:
         return boxed[-1]
-    nums = re.findall(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    nums = re.findall(value, text)
     return nums[-1] if nums else None
 
 
@@ -40,15 +43,20 @@ def numeric_correctness_reward(completion: str, answer: str) -> float:
     if pred is None or gold is None:
         return 0.0
     try:
-        return 1.0 if abs(float(pred) - float(gold)) < 1e-6 else 0.0
-    except ValueError:
+        from fractions import Fraction
+        def parse(value):
+            parts = value.split("/")
+            numerator = Fraction(parts[0].strip())
+            return numerator / Fraction(parts[1].strip()) if len(parts) == 2 else numerator
+        return 1.0 if abs(parse(pred) - parse(gold)) < Fraction(1, 1000000) else 0.0
+    except (ValueError, ZeroDivisionError):
         return 0.0
 
 
 def has_closed_think(text: str) -> bool:
     """A single, properly-ordered, closed ``<think>`` block."""
     o, c = text.find("<think>"), text.find("</think>")
-    return o != -1 and c != -1 and o < c
+    return text.count("<think>") == text.count("</think>") == 1 and o < c
 
 
 def think_format_reward(completion: str) -> float:

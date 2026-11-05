@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def _home() -> Path:
@@ -75,12 +75,19 @@ class HardwareTarget(BaseModel):
 
 
 class Governor(BaseModel):
-    """Hard caps enforced from outside the training process (blast-radius limits)."""
+    """Agent limits. GPU-hour and dollar caps need an external scheduler or provider."""
 
     max_steps: int = 80
-    max_gpu_hours: float = 24.0
-    max_cost_usd: float = 50.0
-    max_wall_clock_hours: float = 48.0
+    max_gpu_hours: Optional[float] = None
+    max_cost_usd: Optional[float] = None
+    max_wall_clock_hours: float = Field(default=48.0, gt=0)
+
+    @model_validator(mode="after")
+    def supported_limits(self):
+        if self.max_gpu_hours is not None or self.max_cost_usd is not None:
+            raise ValueError("GPU-hour and dollar caps are not implemented. Use external limits; "
+                             "remove max_gpu_hours and max_cost_usd from this config.")
+        return self
 
 
 class Settings(BaseModel):

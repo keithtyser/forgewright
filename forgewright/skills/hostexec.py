@@ -7,13 +7,15 @@ from __future__ import annotations
 import subprocess
 from typing import Optional
 
+from forgewright.tools.jobs import shell_path, ssh_args
+
 
 def host_run(host: Optional[str], cmd: str, timeout: int = 60) -> str:
     """Run a quick shell command on `host` (ssh) or locally; return stdout (best-effort)."""
-    argv = ["ssh", host, cmd] if host else ["bash", "-lc", cmd]
+    argv = ssh_args(host) + [cmd] if host else ["bash", "-lc", cmd]
     try:
         r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        return (r.stdout or "").strip()
+        return (r.stdout or "").strip() if r.returncode == 0 else ""
     except Exception:  # noqa: BLE001
         return ""
 
@@ -24,11 +26,11 @@ def resolve_local(host: Optional[str], uri: str) -> str:
         return uri
     stem = uri.rstrip("/").split("/")[-1]
     cand = f"~/models/{stem}"
-    return cand if host_run(host, f"test -d {cand} && echo yes") else uri
+    return cand if host_run(host, f"test -d {shell_path(cand)} && echo yes") else uri
 
 
 def wrote_fresh_weights(host: Optional[str], out_dir: str, since: float) -> bool:
     """True iff `out_dir` has model weights modified at/after `since` (written by this run)."""
-    cmd = (f'find {out_dir} -type f \\( -name "*.safetensors" -o -name "*.bin" \\) '
+    cmd = (f'find {shell_path(out_dir)} -type f \\( -name "*.safetensors" -o -name "*.bin" \\) '
            f"-newermt @{int(since)} 2>/dev/null | head -1")
     return bool(host_run(host, out_dir and cmd))

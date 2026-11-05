@@ -19,7 +19,7 @@ def test_resolve_quantize_serve_from_model_uri(tmp_path):
     reg = Registry(tmp_path / "a.jsonl")
     steps, seed = _resolve("quantize_serve", {"family": "qwen35_9b", "model_uri": "~/models/Qwen3.5-9B",
                                               "objective": "throughput"}, reg)
-    assert [s.specialist_cls.role for s in steps] == ["Quantizer", "ServingOptimizer"]
+    assert [s.specialist_cls.role for s in steps] == ["Quantizer", "Evaluator", "ServingOptimizer"]
     assert len(seed) == 1 and seed[0].kind == "model"
 
 

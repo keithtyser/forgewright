@@ -14,15 +14,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from forgewright.trainers.rl import _REWARD_SOURCE
 
 
-def gate_pass(base_score: float, candidate_score: float, *, tolerance: float = 0.0) -> bool:
+def gate_pass(base_score: float | None, candidate_score: float | None, *, tolerance: float = 0.0) -> bool:
     """The candidate passes if it does not regress the base beyond `tolerance`
     (tolerance absorbs eval noise; set 0.0 to require strict non-regression)."""
-    return candidate_score >= base_score - tolerance
+    import math
+    if base_score is None or candidate_score is None:
+        return False
+    return (all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+                for v in (base_score, candidate_score, tolerance))
+            and 0 <= base_score <= 1 and 0 < candidate_score <= 1 and 0 <= tolerance <= 1
+            and candidate_score >= base_score - tolerance)
 
 
 def gate_report(base_score: float, candidate_score: float, *, tolerance: float = 0.0) -> dict:
@@ -57,6 +62,8 @@ tok = AutoTokenizer.from_pretrained(cfg["base"])
 if tok.pad_token is None:
     tok.pad_token = tok.eos_token
 ds = load_dataset("json", data_files=cfg["holdout"], split="train")
+if len(ds) < cfg.get("min_samples", 32):
+    raise ValueError("Evaluation dataset is too small (minimum 32 samples by default)")
 adapter = os.path.expanduser(cfg["adapter"])
 
 def _lora_b_sum(m):
@@ -77,7 +84,7 @@ def load_pair():
             continue
         ft = PeftModel.from_pretrained(base, adapter)
         if _lora_b_sum(ft) > 0:
-            return _load_base(loader), ft  # fresh base (clean) + adapter-applied model
+            return ft
     raise RuntimeError(
         "adapter did not apply with any loader (lora_B stayed 0) — "
         "base/adapter architecture mismatch; the gate would be meaningless")
@@ -96,12 +103,13 @@ def score(model):
         correct += numeric_correctness_reward(comp, ex["answer"])
     return correct / max(len(ds), 1)
 
-base, ft = load_pair()
-base_score = score(base)
+ft = load_pair()
+with ft.disable_adapter():
+    base_score = score(ft)
 cand_score = score(ft)
 
 delta = cand_score - base_score
-passed = cand_score >= base_score - cfg.get("tolerance", 0.0)
+passed = cand_score > 0 and cand_score >= base_score - cfg.get("tolerance", 0.0)
 result = {{"base_score": base_score, "candidate_score": cand_score, "delta": delta,
           "passed": bool(passed), "verdict": "PASS" if passed else "REGRESSION", "n": len(ds)}}
 Path(cfg["out"]).write_text(json.dumps(result, indent=2) + "\\n")

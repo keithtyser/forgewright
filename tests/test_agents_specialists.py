@@ -56,6 +56,7 @@ def test_sft_trainer_produces_lineaged_adapter(tmp_path):
         meta={"family": "qwen35_0_8b", "source": "Qwen/Qwen3.5-0.8B", "run_name": "q08_uplift"},
     ))
     sft = SFTTrainer(runner=forge, jobs=jobs, registry=reg)
+    _write_split(tmp_path, ds)
     art = sft.run([ds], "uplift it", max_steps=10)
 
     assert isinstance(art, AdapterArtifact)
@@ -66,7 +67,7 @@ def test_sft_trainer_produces_lineaged_adapter(tmp_path):
     assert any("prepare --overwrite" in c for c in forge.calls)
     assert any("train_trl_sft.py" in c for c in jobs.launched)
     # config + manifest + registry were written into the (tmp) repo
-    assert (tmp_path / "configs" / "finetuning" / "q08_uplift.yaml").exists()
+    assert (tmp_path / "configs" / "finetuning" / f"{art.meta['run_name']}.yaml").exists()
     # the produced artifact is discoverable in the registry with lineage
     assert reg.latest("adapter").id == art.id
     assert [a.id for a in reg.lineage(art.id)] == [art.id, ds.id]
@@ -82,11 +83,12 @@ def test_sft_gate_fails_on_nonzero_exit(tmp_path):
     sft = SFTTrainer(runner=FakeForge(tmp_path), jobs=FakeJobs(exit_code=1),
                      registry=Registry(tmp_path / "r.jsonl"))
     ds = DatasetArtifact(uri="d.jsonl", meta={"family": "q", "source": "Qwen/Qwen3.5-0.8B"})
+    _write_split(tmp_path, ds)
     art = sft.run([ds], "")
     assert not art.gate.passed and "did not exit cleanly" in art.gate.verdict
 
 
-def test_evaluator_produces_eval_artifact_from_result(tmp_path):
+def test_evaluator_produces_eval_artifact_from_result(tmp_path, monkeypatch):
     forge = FakeForge(tmp_path)
     jobs = FakeJobs()
     reg = Registry(tmp_path / "artifacts.jsonl")
@@ -94,11 +96,12 @@ def test_evaluator_produces_eval_artifact_from_result(tmp_path):
         uri="~/models/q08-grpo", produced_by="RLTrainer",
         meta={"base": "Qwen/Qwen3.5-0.8B", "run_name": "q08_grpo"},
     ))
-    # simulate the container eval-gate having written its result.json
-    rd = tmp_path / "runs" / "eval_gate" / "q08_grpo"
-    rd.mkdir(parents=True)
-    (rd / "result.json").write_text(json.dumps(
-        {"base_score": 0.34, "candidate_score": 1.0, "delta": 0.66, "passed": True, "verdict": "PASS", "n": 50}))
+    def finish(jid, **kwargs):
+        rd = next((tmp_path / "runs" / "eval_gate").iterdir())
+        (rd / "result.json").write_text(json.dumps(
+            {"base_score": 0.34, "candidate_score": 1.0, "delta": 0.66, "passed": True, "verdict": "PASS", "n": 50}))
+        return {"exit_code": 0}
+    monkeypatch.setattr(jobs, "wait", finish)
 
     ev = Evaluator(runner=forge, jobs=jobs, registry=reg)
     art = ev.run([adapter], holdout="datasets/rl/mult_holdout.jsonl")
@@ -113,3 +116,12 @@ def test_evaluator_needs_base_and_holdout(tmp_path):
     ev = Evaluator(runner=FakeForge(tmp_path), jobs=FakeJobs(), registry=Registry(tmp_path / "r.jsonl"))
     with pytest.raises(ValueError):
         ev.run([AdapterArtifact(uri="x", meta={})])  # no base, no holdout
+
+
+def _write_split(repo, ds):
+    ds.meta["holdout"] = "holdout.jsonl"
+    p = repo / ds.uri
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"messages": [{"role": "user", "content": "2+2?"},
+                                        {"role": "assistant", "content": "4"}]}))
+    (repo / "holdout.jsonl").write_text('{"prompt":"3+3?","answer":"6"}')

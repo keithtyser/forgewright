@@ -38,7 +38,7 @@ class Tool(ABC):
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
 
     @abstractmethod
-    def run(self, **kwargs: Any) -> ToolResult: ...
+    def run(self, *args: Any, **kwargs: Any) -> ToolResult: ...
 
     def schema(self) -> dict[str, Any]:
         return {

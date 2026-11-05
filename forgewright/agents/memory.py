@@ -17,7 +17,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 
 def _default_path() -> Path:
@@ -84,7 +84,11 @@ class OutcomeMemory:
     def best_params(self, *, stage: str, family: str) -> Optional[dict]:
         """The hyperparameters from the most recent PASSING run of (stage, family), if any.
         This is what a repair policy seeds its next attempt with."""
-        passing = self.recall(stage=stage, family=family, passed=True)
+        latest: dict[str, dict] = {}
+        for row in self.recall(stage=stage, family=family):
+            key = row.get("artifact_id") or str(row.get("ts"))
+            latest.setdefault(key, row)
+        passing = [r for r in latest.values() if r.get("passed") is True]
         for r in passing:
             if r.get("params"):
                 return dict(r["params"])

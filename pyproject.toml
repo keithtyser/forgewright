@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "forgewright"
 version = "0.0.1"
-description = "A multi-agent swarm for autonomous LLM post-training: one conversational CLI driving specialist agents (data curation, fine-tune, abliterate, quantize, serving-opt, eval, publish) over local or SSH GPUs."
+description = "A conversational CLI for checked LLM post-training recipes through model-forge."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
@@ -15,7 +15,9 @@ keywords = ["llm", "post-training", "fine-tuning", "abliteration", "quantization
 # Light, cross-platform CONTROL PLANE: runs on the machine you type on (incl. Windows),
 # dispatches heavy work to GPU boxes over SSH/Docker. No torch here.
 dependencies = [
-  "litellm>=1.55",          # model-agnostic brain (local vLLM / API / OAuth tap)
+  "litellm==1.103.10",      # compatible with the patched filelock release
+  "filelock>=4.2.1,<5",
+  "jsonschema>=4.23",
   "typer>=0.15",            # CLI
   "rich>=13.9",             # terminal UX
   "pydantic>=2.9",
@@ -38,10 +40,10 @@ local-train = [
   "accelerate>=1.1",
   "bitsandbytes>=0.44",
   # unsloth is platform/CUDA-specific — install separately per README (Blackwell wheels).
-  "model-forge[finetuning,abliteration,external] @ git+https://github.com/keithtyser/model-forge.git@main",
+  "model-forge[finetuning,abliteration,external] @ git+https://github.com/keithtyser/model-forge.git@324a5b487d578c1da837719bae3d1399eeb9f55b",
 ]
 mcp = ["mcp>=1.1"]
-dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff==0.17.3", "mypy==2.4.1", "pip-audit>=2.10", "build>=1.2"]
 
 [project.scripts]
 forgewright = "forgewright.cli:app"
@@ -57,6 +59,9 @@ packages = ["forgewright"]
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [tool.mypy]
 python_version = "3.11"
 ignore_missing_imports = true
@@ -64,3 +69,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"

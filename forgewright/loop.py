@@ -180,6 +180,7 @@ class Agent:
         breaker: Optional[CircuitBreaker] = None,
         checkpoint: Optional[Checkpoint] = None,
         resume: bool = False,
+        max_wall_clock_hours: float = 48.0,
     ) -> None:
         self.brain = brain
         self.tools = tools
@@ -196,6 +197,7 @@ class Agent:
         # crash-resume: snapshot the working context each step so a re-launch picks up mid-run.
         self.checkpoint = checkpoint
         self.resume = resume
+        self.max_wall_clock_hours = max_wall_clock_hours
         # make compaction model-aware (budget from the brain's context window) + give it a
         # summarizer so long runs condense instead of dropping context.
         try:
@@ -242,6 +244,11 @@ class Agent:
         # max_steps <= 0 means run until the goal is met (no step-budget hard stop); the doom-loop
         # guard (identical call 3x) and the velocity circuit breaker are the safety nets.
         while self.max_steps <= 0 or step < self.max_steps:
+            import time
+            if not hasattr(self, "_deadline"):
+                self._deadline = time.monotonic() + self.max_wall_clock_hours * 3600
+            if time.monotonic() >= self._deadline:
+                return LoopResult(False, step, "wall-clock budget exhausted; check detached jobs")
             if self.interrupt and self.interrupt():
                 self._emit("assistant", {"step": step, "content": "(interrupted)", "tool_calls": []})
                 return LoopResult(False, step, "interrupted")
@@ -251,6 +258,7 @@ class Agent:
                 self._emit("assistant", {"step": step, "content": tripped, "tool_calls": []})
                 return LoopResult(False, step, tripped)
             step += 1
+            self.ctx.maybe_compact()
             turn = self.brain.chat(self.ctx.messages(), tools=self.tools.schemas())
             self.ctx.add_assistant(turn)
             self.breaker.record_step(int((turn.usage or {}).get("total_tokens", 0)))
@@ -275,7 +283,8 @@ class Agent:
             made_progress = False
             for tc in turn.tool_calls:
                 result = self._dispatch(tc, recent)
-                made_progress = made_progress or result.ok   # a successful tool result = the run advanced
+                made_progress = made_progress or (result.ok and tc.name not in
+                    {"monitor_job", "tail_logs", "list_jobs", "read_file", "gpu_inspect"})
                 self.ctx.add_tool_result(tc, result)
                 self._log(
                     "tool",
@@ -309,6 +318,11 @@ class Agent:
         tool = self.tools.get(tc.name)
         if tool is None:
             return ToolResult(False, f"unknown tool: {tc.name!r}")
+        from jsonschema import ValidationError, validate
+        try:
+            validate(tc.arguments, tool.parameters)
+        except ValidationError as exc:
+            return ToolResult(False, f"Invalid arguments for {tc.name}: {exc.message}")
 
         sig = tc.name + json.dumps(tc.arguments, sort_keys=True, default=str)
         recent.append(sig)

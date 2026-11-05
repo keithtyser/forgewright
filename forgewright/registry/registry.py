@@ -27,8 +27,17 @@ class Registry:
 
     def register(self, artifact: Artifact) -> Artifact:
         """Append an artifact and return it (id assigned in __post_init__)."""
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(artifact.to_dict(), default=str) + "\n")
+        from filelock import FileLock
+        with FileLock(str(self.path) + ".lock"):
+            previous = self.get(artifact.id)
+            if previous is not None:
+                if previous.to_dict() != artifact.to_dict():
+                    raise ValueError(f"Artifact {artifact.id} is immutable; register a new artifact")
+                return artifact
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(artifact.to_dict(), default=str) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
         return artifact
 
     # --- read ----------------------------------------------------------------------
@@ -36,11 +45,15 @@ class Registry:
     def all(self) -> list[Artifact]:
         if not self.path.exists():
             return []
-        return [
-            artifact_from_dict(json.loads(ln))
-            for ln in self.path.read_text(encoding="utf-8").splitlines()
-            if ln.strip()
-        ]
+        artifacts = []
+        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                artifacts.append(artifact_from_dict(json.loads(line)))
+            except (ValueError, TypeError, KeyError) as exc:
+                raise ValueError(f"Corrupt artifact registry at {self.path}:{number}; repair before running") from exc
+        return artifacts
 
     def get(self, artifact_id: str) -> Optional[Artifact]:
         # last write for an id wins (artifacts are immutable, but re-registration is allowed)
@@ -50,12 +63,13 @@ class Registry:
                 found = a
         return found
 
-    def latest(self, kind: str | None = None, **meta_filters: Any) -> Optional[Artifact]:
+    def latest(self, kind: str | None = None, *, include_failed: bool = False, **meta_filters: Any) -> Optional[Artifact]:
         """Most-recent artifact of `kind` whose meta matches all `meta_filters`. Ties on
         `created_at` (coarse clocks) are broken by append order — last registered wins."""
         candidates = [
             (idx, a) for idx, a in enumerate(self.all())
             if (kind is None or a.kind == kind)
+            and (include_failed or a.gate is None or a.gate.passed)
             and all(a.meta.get(k) == v for k, v in meta_filters.items())
         ]
         if not candidates:

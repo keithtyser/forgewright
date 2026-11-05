@@ -28,7 +28,7 @@ function fmtDur(ms) {
 function stageGlyph(state, spin) {
   if (state === 'done') return { glyph: '✓', color: 'green' };
   if (state === 'failed') return { glyph: '✗', color: 'red' };
-  if (state === 'active') return { glyph: spin, color: 'magenta' };
+  if (state === 'active' || state === 'retry') return { glyph: spin, color: 'magenta' };
   return { glyph: '◌', color: 'gray' };
 }
 

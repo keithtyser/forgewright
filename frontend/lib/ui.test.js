@@ -1,5 +1,6 @@
 // Assertions for the shared motion/format/HUD layer (run: node lib/ui.test.js).
 'use strict';
+delete process.env.NO_COLOR;
 const assert = require('assert');
 const ui = require('./ui');
 const { makeTheme } = require('./theme');

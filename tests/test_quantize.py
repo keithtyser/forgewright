@@ -42,7 +42,9 @@ def test_choose_quant_method_prefers_best_supported():
     assert choose_quant_method([]) is None                                   # no quant -> bf16
     # an explicit request is honored only when the arch supports it
     assert choose_quant_method(["fp8", "int8"], requested="fp8") == "fp8"
-    assert choose_quant_method(["int8", "awq"], requested="nvfp4") is None   # Ampere can't do NVFP4
+    import pytest
+    with pytest.raises(ValueError, match="does not support"):
+        choose_quant_method(["int8", "awq"], requested="nvfp4")
 
 
 def test_scaffold_fp8_method():

@@ -34,8 +34,8 @@ SPECIALISTS = {
 # Per-role: which flat params to forward as run_kwargs (the LLM doesn't set these; the user's
 # params do). Keeps planned stages from receiving kwargs their run() doesn't accept.
 _RUN_KWARGS = {
-    "DataCurator": ("mode", "seed_paths", "family", "source", "run_name", "holdout"),
-    "SFTTrainer": ("max_steps",),
+    "DataCurator": ("mode", "seed_paths", "family", "source", "run_name", "holdout", "provider", "smoke"),
+    "SFTTrainer": ("max_steps", "target_samples"),
     "RLTrainer": ("max_steps",),
     "Merger": (),
     "Abliterator": ("strength",),
@@ -75,10 +75,16 @@ def validate_chain(roles: list[str], seed_kind: Optional[str]) -> tuple[bool, st
     if not roles:
         return False, "empty plan"
     current = seed_kind
+    evaluated = False
+    pending = False
     for role in roles:
         cls = SPECIALISTS.get(role)
         if cls is None:
             return False, f"unknown specialist '{role}'"
+        if pending and role != "Evaluator":
+            return False, "Each model transform must be followed by Evaluator"
+        if role == "Publisher" and (not evaluated or role != roles[-1]):
+            return False, "Publisher must be last and follow evaluation of the current artifact"
         if cls.accepts:
             if current is None:
                 return False, f"{role} needs a {cls.accepts} input but the chain has no upstream artifact"
@@ -88,6 +94,12 @@ def validate_chain(roles: list[str], seed_kind: Optional[str]) -> tuple[bool, st
         # stage (e.g. Publisher) sees the model/adapter, not the eval report.
         if cls.produces != "eval":
             current = cls.produces
+            evaluated = False
+        else:
+            evaluated = True
+        pending = role in {"SFTTrainer", "RLTrainer", "Merger", "Abliterator", "Quantizer"}
+    if pending:
+        return False, "Plan ends with an unevaluated transform"
     return True, "ok"
 
 
@@ -119,6 +131,8 @@ def plan_stages(goal: str, brain: Any, params: Optional[dict] = None, memory: An
     except Exception:  # noqa: BLE001 - planning must never crash the run; fall back
         return None
     roles = _parse_roles(getattr(turn, "content", "") or "")
+    if "Publisher" in roles and not any(w in goal.lower() for w in ("publish", "release", "upload")):
+        return None
     if not roles:
         return None
     ok, _ = validate_chain(roles, _seed_kind(goal, params))
@@ -140,17 +154,17 @@ def _parse_roles(content: str) -> list[str]:
             roles.append(item)
         elif isinstance(item, dict) and item.get("role"):
             roles.append(str(item["role"]))
-    return [r for r in roles if r in SPECIALISTS]
+    return roles
 
 
 def _memory_digest(memory: Any, params: dict) -> str:
     """A short outcomes digest for the planner prompt, or '' if there's no usable history."""
     if memory is None:
-        return None
+        return ""
     try:
-        return memory.digest(family=params.get("family")) or None
+        return memory.digest(family=params.get("family")) or ""
     except Exception:  # noqa: BLE001 - memory grounding is optional, never fatal
-        return None
+        return ""
 
 
 def build_plan(goal: str, params: dict, registry, brain: Any, memory: Any = None

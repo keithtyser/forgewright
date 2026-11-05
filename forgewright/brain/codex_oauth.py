@@ -37,7 +37,8 @@ REFRESH_SKEW_SECONDS = 300
 
 
 def default_auth_path() -> Path:
-    return Path.home() / ".codex" / "auth.json"
+    import os
+    return Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex"))) / "auth.json"
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +267,7 @@ def parse_responses_sse(raw: str) -> AssistantTurn:
     calls: dict[str, dict[str, str]] = {}
     order: list[str] = []
     usage: dict[str, int] = {}
+    completed = False
 
     def _ensure(key: str) -> dict[str, str]:
         if key not in calls:
@@ -295,6 +297,7 @@ def parse_responses_sse(raw: str) -> AssistantTurn:
             if key and isinstance(data.get("arguments"), str):
                 _ensure(key)["arguments"] = data["arguments"]
         elif et == "response.completed":
+            completed = True
             resp = data.get("response") or {}
             usage = _usage_from_response(resp)
             # Fallback: pull any function_calls present in the final output if we missed deltas.
@@ -306,11 +309,13 @@ def parse_responses_sse(raw: str) -> AssistantTurn:
                     rec["call_id"] = item.get("call_id") or rec["call_id"]
                     if isinstance(item.get("arguments"), str) and item["arguments"]:
                         rec["arguments"] = item["arguments"]
-        elif et == "response.failed":
+        elif et in ("response.failed", "response.incomplete", "error"):
             resp = data.get("response") or {}
             err = (resp.get("error") or {}).get("message") or "Codex response failed"
             raise BrainError(f"Codex Responses API error: {err}")
 
+    if not completed:
+        raise BrainError("Codex response ended before response.completed")
     tool_calls: list[ToolCall] = []
     for key in order:
         rec = calls[key]
@@ -393,18 +398,21 @@ class CodexClient:
             or _account_id_from_id_token(payload.get("id_token") or tokens.id_token),
         )
         try:
-            self.auth_path.write_text(
-                json.dumps(refreshed.to_auth_json(base), indent=2), encoding="utf-8"
-            )
+            from forgewright.credentials import secure_write_json
+            if json.loads(self.auth_path.read_text(encoding="utf-8")) != base:
+                raise BrainError("Codex credentials changed during refresh; retry with the current login")
+            secure_write_json(self.auth_path, refreshed.to_auth_json(base))
         except OSError:
             pass  # in-memory token still usable for this process even if we can't persist it
         return refreshed
 
     def _ensure_token(self) -> CodexTokens:
-        base, tokens = self._load_auth()
-        if needs_refresh(tokens.access_token):
-            tokens = self._refresh(base, tokens)
-        return tokens
+        from filelock import FileLock
+        with FileLock(str(self.auth_path) + ".forgewright.lock", timeout=65):
+            base, tokens = self._load_auth()
+            if needs_refresh(tokens.access_token):
+                tokens = self._refresh(base, tokens)
+            return tokens
 
     # -- chat ----------------------------------------------------------------
     def chat(
@@ -492,7 +500,7 @@ class CodexClient:
 def parse_models_payload(data: Any) -> list[str]:
     """Pull model ids out of a /models-style payload, tolerant of several shapes
     ({models:[{slug|id}]}, {data:[{id}]}, or a bare list)."""
-    rows = []
+    rows: list[Any] = []
     if isinstance(data, dict):
         rows = data.get("models") or data.get("data") or []
     elif isinstance(data, list):
@@ -506,5 +514,4 @@ def parse_models_payload(data: Any) -> list[str]:
             if mid:
                 out.append(str(mid))
     # de-dup, keep order
-    seen: set[str] = set()
-    return [m for m in out if not (m in seen or seen.add(m))]
+    return list(dict.fromkeys(out))

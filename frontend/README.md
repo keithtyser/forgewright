@@ -1,34 +1,29 @@
-# Forgewright TUI
+# Forgewright terminal UI
 
-A single Claude-Code-style conversational terminal for the Forgewright post-training swarm.
-You chat here; the swarm (Director plus specialists) runs entirely on the Python backend.
-
-Built with [terminal-kit](https://www.terminal-kit.com/) by Cedric Ronvel (MIT). See `NOTICE`.
-
-## How it works
-
-The TUI spawns `forgewright serve` as a child process and speaks newline-delimited JSON
-with it:
-
-- backend to UI: `assistant`, `tool`, `progress`, `approval_request`, `done` events,
-  each tagged with the specialist `role` so one transcript stays attributable.
-- UI to backend: `user_msg` (your turns) and `approval_response` (approve or deny at the
-  single prompt). The swarm is never an agent-management surface; it is one chat.
-
-## Run
+The Node UI starts the Python backend and displays its events. Install the Python
+package first, then use Node 24 and the checked-in lockfile:
 
 ```bash
-npm install
-npm start                 # interactive TUI; spawns `forgewright serve`
-npm start -- --brain openrouter:deepseek/deepseek-v4-pro
+npm ci --ignore-scripts
+npm start
+npm start -- --brain YOUR_CONFIGURED_PROVIDER
 ```
 
-## Verify the event contract without a TTY
+After `npm install -g .`, the command is `forgewright-tui`. Python owns the separate
+`forgewright` command. Set `FORGEWRIGHT_PYTHON` to select a Python environment.
+Use `forgewright-tui --help` for supported UI options; use Python's `run` command
+for a positional goal, resume and backend options.
 
-```bash
-# pipe backend events in, see how they render (no terminal-kit, no child process):
-echo '{"type":"assistant","role":"Director","content":"plan: DataCurator -> SFTTrainer"}' \
-  | node forgewright-tui.js --render-test
-```
+The UI and backend exchange newline-delimited JSON. Approval responses must carry
+the current request ID. EOF denies pending approvals. A completed transport turn
+can still report an incomplete task through `done.ok=false` and `done.reason`.
 
-`lib/render.js` (`formatEvent`) is dependency-free and holds the pure rendering logic.
+Set `NO_COLOR=1` for plain color output, `FORGEWRIGHT_REDUCED_MOTION=1` for slower
+animation, or `FORGEWRIGHT_PLAIN=1` for compact status. Use `--fullscreen` for the
+optional full-screen view. Terminal-control sequences are removed from event text.
+
+Run `npm test` for rendering, theme, UI and sanitization checks. These helper tests
+do not replace PTY, keyboard-only, resize or screen-reader testing.
+
+Built with [terminal-kit](https://www.terminal-kit.com/) by Cedric Ronvel (MIT).
+See NOTICE.

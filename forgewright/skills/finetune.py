@@ -207,7 +207,7 @@ sources:
     name: {name}_distill
     type: local_jsonl
     path: {data_path}
-    license: CC-BY-4.0
+    license: unknown
     quality_tier: teacher_distillation
     roles: [capability_sft, teacher_distillation]
     messages_field: messages

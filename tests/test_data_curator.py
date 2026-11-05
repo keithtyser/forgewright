@@ -55,6 +55,9 @@ class FakeForge:
 
 def test_curate_seed_produces_dataset_artifact(tmp_path):
     repo = tmp_path
+    holdout = repo / "datasets" / "rl" / "add_holdout.jsonl"
+    holdout.parent.mkdir(parents=True)
+    holdout.write_text('{"prompt":"3+3?","answer":"6"}')
     seed = repo / "datasets" / "seeds" / "s.jsonl"
     seed.parent.mkdir(parents=True)
     seed.write_text("\n".join(json.dumps(r) for r in [

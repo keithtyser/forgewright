@@ -51,11 +51,11 @@ def test_merger_needs_base(tmp_path, monkeypatch):
 # --- the full recipe -------------------------------------------------------
 def test_full_recipe_chains_all_stages_with_evals():
     steps, seed = build_recipe("full", family="q", source="Qwen/Qwen3.5-0.8B",
-                               seed_paths=["d.jsonl"], holdout="h.jsonl")
+                               seed_paths=["d.jsonl"], holdout="h.jsonl", include_abliteration=True)
     roles = [s.specialist_cls.role for s in steps]
-    assert roles == ["DataCurator", "SFTTrainer", "Evaluator", "Merger", "Abliterator",
+    assert roles == ["DataCurator", "SFTTrainer", "Evaluator", "Merger", "Evaluator", "Abliterator",
                      "Evaluator", "Quantizer", "Evaluator", "ServingOptimizer", "Evaluator"]
-    assert roles.count("Evaluator") == 4   # gated after uplift, abliterate, quantize, AND model-opt
+    assert roles.count("Evaluator") == 5
 
 
 def test_evaluator_gates_served_endpoint_via_parent_model(tmp_path, monkeypatch):
@@ -64,12 +64,14 @@ def test_evaluator_gates_served_endpoint_via_parent_model(tmp_path, monkeypatch)
 
     reg = Registry(tmp_path / "r.jsonl")
     model = reg.register(ModelArtifact(uri="~/models/q", meta={"family": "q", "role": "quantized"}))
-    ep = ServedEndpoint(uri="http://localhost:8000", parents=[model.id], meta={"family": "q"})
+    ep = ServedEndpoint(uri="http://localhost:8000", parents=[model.id], meta={"family": "q", "quality": 0.8})
     seen = {}
-    monkeypatch.setattr(Evaluator, "_eval_model_internal",
-                        lambda self, m, baseline=None: seen.update(id=m.id) or m)
-    Evaluator(registry=reg).run([ep])
+    monkeypatch.setattr("forgewright.skills.serving_opt.ServingOptimizer.wait_ready", lambda *a, **k: True)
+    monkeypatch.setattr(Evaluator, "_read_internal",
+                        lambda self, engine, m: seen.update(id=m.id, url=engine.base_url) or {"capability": 0.8})
+    art = Evaluator(registry=reg).run([ep])
     assert seen["id"] == model.id   # the final eval gates the model the endpoint serves
+    assert seen["url"] == ep.uri and art.parents == [ep.id] and art.gate.passed
 
 
 def test_full_recipe_is_type_valid():

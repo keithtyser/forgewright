@@ -12,7 +12,6 @@ from typing import Optional, Sequence
 from forgewright.agents.base import Specialist
 from forgewright.contracts import Artifact, Gate, ServedEndpoint
 from forgewright.skills.serving_opt import ServingOptimizer as ServingOptEngine
-from forgewright.skills.serving_opt import default_served_name
 from forgewright.tools.base import ToolRegistry
 from forgewright.tools.forge import ForgeRunner, ForgeTool
 from forgewright.tools.jobs import JobManager, LaunchJobTool, TailLogsTool
@@ -50,10 +49,11 @@ class ServingOptimizer(Specialist):
         self.validate_inputs(inputs)
         model = inputs[0]
         family = model.meta.get("family") or "model"
-        variant = model.meta.get("variant") or "base_nvfp4_modelopt"
+        from forgewright.skills.model_identity import register_model
+        variant = register_model(self.forge.repo, model)
+        served = model.meta.get("served_model_name") or f"model-forge/{family}-{variant}"
         self._emit("assistant", content=f"serving-opt {model.id} objective={objective}")
-        results, best = self.engine.run(family, variant, objective, eval_each=eval_each)  # type: ignore[arg-type]
-        served = model.meta.get("served_model_name") or default_served_name(family, variant)
+        results, best = self.engine.run(family, variant, objective, eval_each=eval_each, served_name=served)  # type: ignore[arg-type]
         ok = best is not None
         art = ServedEndpoint(
             uri=self.engine.base_url, produced_by=self.role, parents=[model.id],
@@ -61,9 +61,11 @@ class ServingOptimizer(Specialist):
             gate=Gate(passed=ok, metrics={"best": best.name if best else None, "objective": objective,
                                           "single_tps": getattr(best, "single_tps", None) if best else None,
                                           "aggregate_tps": getattr(best, "aggregate_tps", None) if best else None},
-                      verdict=(f"OPTIMIZED:{best.name}" if ok else "FAIL: no quality-preserving config beat baseline")),
+                      verdict=(f"OPTIMIZED:{best.name}" if best is not None else "FAIL: no quality-preserving config beat baseline")),
             meta={"served_model_name": served, "family": family, "variant": variant,
-                  "objective": objective, "best_config": best.name if best else None},
+                  "objective": objective, "best_config": best.name if best else None,
+                  "serving_config": self.engine.best_env, "container_name": self.engine.container_name,
+                  "quality": getattr(best, "quality_pass_rate", None)},
         )
         self.registry.register(art)
         self._emit("tool", tool="register_artifact", ok=ok,
