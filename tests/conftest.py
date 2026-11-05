@@ -12,4 +12,5 @@ import pytest
 def _isolated_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("fw_home")
     monkeypatch.setenv("FORGEWRIGHT_HOME", str(home))
+    monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "true")
     yield

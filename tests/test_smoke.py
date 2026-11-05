@@ -97,11 +97,13 @@ def test_interrupt_stops_run_between_steps():
     turns = [AssistantTurn("", [ToolCall(str(i), "echo_tool", {"text": str(i)})]) for i in range(10)]
     calls = {"n": 0}
 
-    def interrupt():
-        calls["n"] += 1
-        return calls["n"] > 2          # allow two steps, then interrupt
+    class CountingEcho(EchoTool):
+        def run(self, text, **kwargs):
+            calls["n"] += 1
+            return super().run(text, **kwargs)
 
-    res = Agent(FakeBrain(turns), ToolRegistry([EchoTool()]), max_steps=0, interrupt=interrupt).run("go")
+    res = Agent(FakeBrain(turns), ToolRegistry([CountingEcho()]), max_steps=0,
+                interrupt=lambda: calls["n"] >= 2).run("go")
     assert res.done is False and res.final == "interrupted" and res.steps == 2
 
 

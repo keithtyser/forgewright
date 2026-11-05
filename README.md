@@ -31,6 +31,8 @@ python -m forgewright run "Inspect my local model and propose a quantization pla
 
 Set `--brain` to a provider name from `providers.yaml` or a shorthand such as `vllm:model@http://localhost:8000/v1`. Copy [the example config](configs/providers.example.yaml) to `$FORGEWRIGHT_HOME/providers.yaml` to define providers.
 
+Provider requests use at most three attempts by default. Authentication, permission and invalid-request errors stop at once. Transient errors use backoff and `Retry-After`; a requested wait over 60 seconds stops the turn. Cancellation interrupts retry waits and prevents later tool calls. An in-flight synchronous request still waits for its response or timeout. Wrapped errors from the experimental OAuth adapter stop without an automatic retry.
+
 The experimental Codex adapter reads `$CODEX_HOME/auth.json`, falling back to `~/.codex/auth.json`. Log in with the official CLI first. See [SECURITY.md](SECURITY.md) for the direct OAuth adapter's limits.
 
 Shell, job, system, and publishing tools ask for approval by default. “All” remembers the same tool and arguments for the session. `--yes` and the UI's YOLO choice bypass approval. They do not create a sandbox or limit spending.
@@ -49,6 +51,8 @@ Shell, job, system, and publishing tools ask for approval by default. “All” 
 `full` adds abliteration only with `include_abliteration=true`. Quantization requires an explicit method or an inspected capability list. A method request alone is an explicit choice, not hardware validation.
 
 Each transform returns an artifact with its source and gate result. Evaluation is a separate step. Missing baseline scores, failed evaluation jobs, stale files, or invalid results fail the gate. Serving optimization measures its baseline configuration, checks candidate quality, and restarts the winner. Publication supports standalone models and requires evaluation of that artifact, approval, and a completed upload receipt.
+
+Recipe inputs can use `model_uri` or `dataset_uri`, or a registered `model_artifact_id` or `dataset_artifact_id`. Without an explicit input, supply `family` or `artifact_run_id`; exactly one accepted artifact must match. A failed latest evaluation excludes its model from lookup. Publication rejects missing lineage records or cycles. These checks do not prove that model files still match their recorded contents; weight manifests remain planned work.
 
 Adapter evaluation supports numeric `{prompt, answer}` JSONL tasks, with at least 32 evaluation examples. It does not measure general chat quality. Model evaluation uses model-forge's internal capability suite. A validation set used to guide repair is no longer an untouched final test; reserve a separate final test for release claims.
 

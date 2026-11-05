@@ -14,8 +14,8 @@ from typing import Any, Optional
 
 from forgewright.agents.director import Director
 from forgewright.agents.memory import OutcomeMemory
+from forgewright.agents.inputs import seed_artifact
 from forgewright.agents.recipes import RECIPES, build_recipe, plan_recipe_name
-from forgewright.contracts import DatasetArtifact, ModelArtifact
 from forgewright.registry import Registry
 from forgewright.tools.base import Tool, ToolResult
 from forgewright.tools.forge import ForgeRunner
@@ -32,21 +32,11 @@ def _resolve(recipe: str, params: dict, registry: Registry):
         p.setdefault("seed_paths", [p.pop("seed_path")] if p.get("seed_path") else [])
         return build_recipe(recipe, **p)
     if recipe == "task_grpo":
-        ds_uri = p.pop("dataset_uri", None) or p.pop("dataset", None)
-        ds = (registry.latest("dataset") if not ds_uri
-              else DatasetArtifact(uri=ds_uri, meta={"family": p.get("family"), "source": p.get("source"),
-                                                     "run_name": p.get("run_name"), "holdout": p.get("holdout")}))
-        if ds is None:
-            raise ValueError("task_grpo needs a dataset_uri or a dataset in the registry")
+        ds = seed_artifact("dataset", p, registry)
         return build_recipe("task_grpo", family=p.get("family", "model"), source=p.get("source", ""),
                             dataset=ds, holdout=p["holdout"], max_steps=p.get("max_steps", 120))
     if recipe in ("quantize_serve", "abliterate"):
-        m_uri = p.pop("model_uri", None)
-        model = (registry.latest("model") if not m_uri
-                 else ModelArtifact(uri=m_uri, meta={"family": p.get("family"), "role": "base",
-                                                     "variant": p.get("variant", "base")}))
-        if model is None:
-            raise ValueError(f"{recipe} needs a model_uri or a model in the registry")
+        model = seed_artifact("model", p, registry)
         kw = {"model": model}
         if recipe == "quantize_serve":
             kw["objective"] = p.get("objective", "latency")
@@ -67,7 +57,9 @@ class RunRecipeTool(Tool):
         "(quant->serving-opt), 'abliterate', 'uplift_publish', or 'auto' (pick from the goal). params: "
         "uplift -> {family, source, seed_paths|seed_path, holdout, max_steps}; task_grpo -> "
         "{family, source, dataset_uri, holdout, max_steps}; quantize_serve/abliterate -> "
-        "{family, model_uri, objective|strength}. Long-running; returns the artifact lineage + gate."
+        "{family, model_uri, objective|strength}. A model_artifact_id or dataset_artifact_id can replace "
+        "its URI. Registry lookup requires a family or artifact_run_id with one accepted match. "
+        "Long-running; returns the artifact lineage + gate."
     )
     risk = "exec"
     parameters = {
@@ -110,9 +102,14 @@ class RunRecipeTool(Tool):
         self.ledger = ledger
         self.interrupt = interrupt
         self.jobs.interrupt = interrupt
+        from forgewright.brain.provider import Brain
+        if isinstance(self.brain, Brain):
+            self.brain.interrupt = interrupt
 
     def run(self, recipe: str, params: Optional[dict] = None, goal: str = "", **_: Any) -> ToolResult:
         params = params or {}
+        if self.interrupt and self.interrupt():
+            return ToolResult(False, "interrupted")
         if isinstance(params, str):  # some brains pass JSON as a string
             try:
                 params = json.loads(params)
@@ -144,6 +141,8 @@ class RunRecipeTool(Tool):
                 steps, seed = _resolve(recipe, params, self.registry)
             except Exception as e:  # noqa: BLE001
                 return ToolResult(False, f"recipe setup failed: {e}")
+        if self.interrupt and self.interrupt():
+            return ToolResult(False, "interrupted")
         for step in steps:
             step.init_kwargs.setdefault("runner", self.forge)
             step.init_kwargs.setdefault("jobs", self.jobs)

@@ -124,22 +124,25 @@ class Abliterator(Specialist):
             return uri
         stem = uri.rstrip("/").split("/")[-1]
         cand = f"~/models/{stem}"
-        return cand if self._host_run(f"test -d {cand} && echo yes") else uri
+        from forgewright.tools.jobs import shell_path
+        return cand if self._host_run(f"test -d {shell_path(cand)} && echo yes") else uri
 
     def _host_run(self, cmd: str, timeout: int = 60) -> str:
         """Run a quick shell command on this specialist's host (ssh) or locally; return stdout."""
-        argv = ["ssh", self.host, cmd] if self.host else ["bash", "-lc", cmd]
+        from forgewright.tools.jobs import ssh_args
+        argv = ssh_args(self.host) + [cmd] if self.host else ["bash", "-lc", cmd]
         try:
             r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-            return (r.stdout or "").strip()
+            return (r.stdout or "").strip() if r.returncode == 0 else ""
         except Exception:  # noqa: BLE001 - verification is best-effort; treat as "not verified"
             return ""
 
     def _wrote_fresh_weights(self, out_dir: str, since: float) -> bool:
         """True iff the output dir contains model weights modified at/after `since` (i.e. written
         by THIS run). `~` is expanded by the shell (local bash -lc or the remote ssh shell)."""
+        from forgewright.tools.jobs import shell_path
         cmd = (
-            f'find {out_dir} -type f \\( -name "*.safetensors" -o -name "*.bin" \\) '
+            f'find {shell_path(out_dir)} -type f \\( -name "*.safetensors" -o -name "*.bin" \\) '
             f"-newermt @{int(since)} 2>/dev/null | head -1"
         )
         return bool(self._host_run(cmd))
